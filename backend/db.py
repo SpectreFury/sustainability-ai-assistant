@@ -4,8 +4,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
-_ = load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+_ = load_dotenv(Path(__file__).resolve().parent / ".env")
+
+
+class Base(DeclarativeBase):
+    pass
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
