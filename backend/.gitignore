@@ -1,0 +1,65 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+bin/
+build/
+develop-eggs/
+dist/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments (Standard & UV)
+.venv/
+venv/
+ENV/
+env/
+.env-py3*/
+
+# UV and Pipenv specific
+# NOTE: Do NOT ignore uv.lock. Commit uv.lock to version control.
+.uv/
+
+# Environment variables, credentials, and secrets
+.env
+.env.*
+!.env.example
+.secrets
+*.pem
+*.key
+
+# Inline documentation / Type checking / Linting
+.pytype/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.pickle
+
+# Database / SQLite / Storage local to development
+*.db
+*.sqlite3
+*.sqlite
+/storage/
+/uploads/
+
+# Operating System specific
+.DS_Store
+Thumbs.db
+
