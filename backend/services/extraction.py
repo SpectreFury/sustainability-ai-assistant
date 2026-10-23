@@ -6,7 +6,6 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import PurePath
-from urllib.parse import urlparse
 
 import httpx
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -20,6 +19,7 @@ from prompts.spreadsheet_mapping import (
     SPREADSHEET_MAPPING_SYSTEM_PROMPT,
     spreadsheet_mapping_input,
 )
+from utils.cloudinary import create_signed_raw_download_url
 
 
 class MetricColumnMapping(BaseModel):
@@ -73,31 +73,48 @@ _UNIT_PATTERN = re.compile(
 )
 
 
-async def download_document(url: str, expected_hash: str | None = None) -> bytes:
-    parsed_url = urlparse(url)
-    if parsed_url.scheme != "https" or parsed_url.hostname != "res.cloudinary.com":
-        raise ValueError("Document URL is not a valid Cloudinary HTTPS URL.")
+async def download_document(
+    public_id: str,
+    filename: str,
+    expected_hash: str | None = None,
+) -> bytes:
+    file_format = PurePath(filename).suffix.lower().removeprefix(".")
+    if file_format not in {"pdf", "xlsx"}:
+        raise ValueError("Unsupported file type. Only .xlsx and .pdf are supported.")
+
+    url = create_signed_raw_download_url(public_id, file_format)
 
     chunks: list[bytes] = []
     total_bytes = 0
     content_hash = hashlib.sha256()
-    async with httpx.AsyncClient(timeout=60) as client:
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            content_length = response.headers.get("content-length")
-            if content_length and int(content_length) > _MAX_DOCUMENT_BYTES:
-                raise ValueError(
-                    "Document exceeds the configured extraction size limit."
-                )
-
-            async for chunk in response.aiter_bytes():
-                total_bytes += len(chunk)
-                if total_bytes > _MAX_DOCUMENT_BYTES:
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            async with client.stream("GET", url) as response:
+                if not response.is_success:
+                    cloudinary_error = response.headers.get("x-cld-error")
+                    detail = f": {cloudinary_error}" if cloudinary_error else ""
+                    raise ValueError(
+                        "Cloudinary download failed with HTTP "
+                        f"{response.status_code}{detail}."
+                    )
+                content_length = response.headers.get("content-length")
+                if content_length and int(content_length) > _MAX_DOCUMENT_BYTES:
                     raise ValueError(
                         "Document exceeds the configured extraction size limit."
                     )
-                chunks.append(chunk)
-                content_hash.update(chunk)
+
+                async for chunk in response.aiter_bytes():
+                    total_bytes += len(chunk)
+                    if total_bytes > _MAX_DOCUMENT_BYTES:
+                        raise ValueError(
+                            "Document exceeds the configured extraction size limit."
+                        )
+                    chunks.append(chunk)
+                    content_hash.update(chunk)
+    except httpx.HTTPError:
+        # The signed download URL contains a temporary API signature; don't leak it
+        # through the worker's exception logging.
+        raise ValueError("Cloudinary document download request failed.") from None
 
     if not chunks:
         raise ValueError("Downloaded document is empty.")

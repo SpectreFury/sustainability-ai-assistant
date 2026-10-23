@@ -24,14 +24,14 @@ async def process_document(document_id: str) -> None:
             document = await session.get(Document, parsed_document_id)
             if document is None or document.status != "processing":
                 return
-            cloudinary_url = document.cloudinary_url
+            cloudinary_public_id = document.cloudinary_public_id
             filename = document.filename
             file_hash = document.file_hash
 
-        if not cloudinary_url:
-            raise ValueError("Document has no stored file URL.")
+        if not cloudinary_public_id:
+            raise ValueError("Document has no Cloudinary public ID.")
 
-        content = await download_document(cloudinary_url, file_hash)
+        content = await download_document(cloudinary_public_id, filename, file_hash)
         document_type, metrics = await extract_document(filename, content)
 
         async with SessionLocal() as session:
