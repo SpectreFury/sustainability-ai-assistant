@@ -2,7 +2,42 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+)
+
+
+_SAFE_DOCUMENT_ERROR_PREFIXES = (
+    "The upload has not completed",
+    "Unsupported file type",
+    "Could not submit this job to the worker queue",
+    "A temporary processing issue",
+    "This PDF is password-protected",
+    "The uploaded file is empty",
+    "File verification failed",
+    "PDF extraction is not configured",
+    "No supported information",
+    "No verifiable information",
+    "This document exceeds",
+    "Only PDF and XLSX documents",
+    "The uploaded document could not be retrieved",
+    "Document processing failed",
+    "The upload failed",
+    "Could not enqueue a retry",
+)
+
+
+def sanitize_document_error(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if any(value.startswith(prefix) for prefix in _SAFE_DOCUMENT_ERROR_PREFIXES):
+        return value[:500]
+    return "Document processing failed. Please try again or contact support."
 
 
 class UploadSignatureRequest(BaseModel):
@@ -43,3 +78,8 @@ class DocumentResponse(BaseModel):
     status: str
     error_message: str | None
     upload_timestamp: datetime
+
+    @field_validator("error_message", mode="before")
+    @classmethod
+    def hide_internal_errors(cls, value: str | None) -> str | None:
+        return sanitize_document_error(value)

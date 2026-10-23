@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
     func,
 )
@@ -22,8 +23,13 @@ class ExtractionRun(Base):
     __tablename__ = "extraction_runs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('running', 'succeeded', 'failed')",
+            "status IN ('queued', 'running', 'succeeded', 'failed')",
             name="ck_extraction_runs_status",
+        ),
+        UniqueConstraint(
+            "document_id",
+            "attempt_number",
+            name="uq_extraction_runs_document_attempt",
         ),
         Index("ix_extraction_runs_document_started", "document_id", "started_at"),
     )

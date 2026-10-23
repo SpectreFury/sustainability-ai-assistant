@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Document
+from models import Document, ExtractionRun
 from schemas.documents import (
     DocumentResponse,
     UploadCompleteRequest,
@@ -123,7 +123,7 @@ async def fail_document_upload(
     session: AsyncSession,
     user_id: int,
     document_id: UUID,
-    error_message: str,
+    _error_message: str,
 ) -> Document:
     document = await session.scalar(
         select(Document).where(
@@ -135,7 +135,9 @@ async def fail_document_upload(
         raise HTTPException(status_code=404, detail="Document not found.")
 
     document.status = "failed"
-    document.error_message = error_message[:2000]
+    # The client-facing document status is not a debugging channel. Detailed
+    # failures belong in server logs, not in the persisted/API-visible message.
+    document.error_message = "The upload failed. Please select the file and retry."
     await session.commit()
     await session.refresh(document)
     return document
@@ -167,7 +169,7 @@ async def queue_pending_documents(
     if not documents:
         return []
 
-    queueable: list[Document] = []
+    queueable: list[tuple[Document, ExtractionRun]] = []
     for document in documents:
         if not document.cloudinary_url:
             document.status = "failed"
@@ -183,7 +185,18 @@ async def queue_pending_documents(
                 "Unsupported file type. Only .xlsx and .pdf are supported."
             )
             continue
-        queueable.append(document)
+        run = ExtractionRun(
+            document_id=document.id,
+            attempt_number=document.attempt_count + 1,
+            status="queued",
+            extraction_version="facts-v2",
+        )
+        document.attempt_count = run.attempt_number
+        document.status = "processing"
+        document.error_message = None
+        document.processing_started_at = None
+        session.add(run)
+        queueable.append((document, run))
 
     if not queueable:
         await session.commit()
@@ -201,26 +214,28 @@ async def queue_pending_documents(
             ),
         ) from error
 
-    for document in queueable:
-        document.status = "processing"
-        document.error_message = None
     await session.commit()
 
     queue_failures = 0
-    for document in queueable:
+    for document, run in queueable:
         try:
-            await process_document.kiq(str(document.id))
+            await process_document.kiq(str(run.id))
         except Exception:
             queue_failures += 1
+            run.status = "failed"
+            run.error_message = "Could not submit this job to the worker queue."
+            run.completed_at = datetime.now(UTC)
             document.status = "pending"
             document.error_message = (
                 "Could not submit this job to the worker queue. Please try again."
             )
+            document.processing_started_at = None
             await session.commit()
         await session.refresh(document)
 
+    queueable_documents = {document.id for document, _ in queueable}
     for document in documents:
-        if document not in queueable:
+        if document.id not in queueable_documents:
             await session.refresh(document)
 
     if queue_failures == len(queueable):
