@@ -10,7 +10,10 @@ import {
   Stack,
   Text,
 } from "@chakra-ui/react"
+import { signup } from "@/api/auth"
+import { useMutation } from "@tanstack/react-query"
 import NextLink from "next/link"
+import { useRouter } from "next/navigation"
 import { useState, type FormEvent } from "react"
 import { z } from "zod"
 
@@ -28,9 +31,12 @@ type SignupErrors = Partial<Record<"username" | "email" | "password", string>>
 
 export function SignupForm() {
   const [errors, setErrors] = useState<SignupErrors>({})
+  const router = useRouter()
+  const signupMutation = useMutation({ mutationFn: signup })
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    signupMutation.reset()
 
     const formData = new FormData(event.currentTarget)
     const result = signupSchema.safeParse(Object.fromEntries(formData.entries()))
@@ -50,6 +56,10 @@ export function SignupForm() {
     }
 
     setErrors({})
+
+    signupMutation.mutate(result.data, {
+      onSuccess: () => router.replace("/workspace"),
+    })
   }
 
   return (
@@ -79,6 +89,11 @@ export function SignupForm() {
         </Stack>
         <form noValidate onSubmit={handleSubmit}>
           <Stack gap="4">
+            {signupMutation.isError && (
+              <Text role="alert" color="red.500">
+                {signupMutation.error.message}
+              </Text>
+            )}
             <Field.Root required invalid={Boolean(errors.username)}>
               <Field.Label>Username</Field.Label>
               <Input
@@ -113,8 +128,13 @@ export function SignupForm() {
                 <Field.ErrorText>{errors.password}</Field.ErrorText>
               )}
             </Field.Root>
-            <Button type="submit" colorPalette="teal" w="full">
-              Create account
+            <Button
+              type="submit"
+              colorPalette="teal"
+              w="full"
+              disabled={signupMutation.isPending}
+            >
+              {signupMutation.isPending ? "Creating account..." : "Create account"}
             </Button>
           </Stack>
         </form>

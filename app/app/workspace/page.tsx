@@ -1,14 +1,19 @@
 "use client"
 
-import { Button, Flex, Stack } from "@chakra-ui/react"
+import { logout } from "@/api/auth"
 import { AskArea } from "@/components/areas/ask-area"
 import { UploadArea } from "@/components/areas/upload-area"
+import { Button, Flex, Stack, Text } from "@chakra-ui/react"
+import { useMutation } from "@tanstack/react-query"
+import { useRouter } from "next/navigation"
 import { useState } from "react"
 
 type ActiveTab = "upload" | "ask"
 
 export default function WorkspacePage() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("upload")
+  const router = useRouter()
+  const logoutMutation = useMutation({ mutationFn: logout })
   const ActiveArea = activeTab === "upload" ? UploadArea : AskArea
 
   return (
@@ -20,6 +25,7 @@ export default function WorkspacePage() {
         flexShrink="0"
         gap="2"
         p="4"
+        minH="100dvh"
         borderRightWidth="1px"
         borderColor="border"
         bg="bg"
@@ -41,6 +47,25 @@ export default function WorkspacePage() {
           onClick={() => setActiveTab("ask")}
         >
           Ask
+        </Button>
+        {logoutMutation.isError && (
+          <Text role="alert" color="red.500">
+            {logoutMutation.error.message}
+          </Text>
+        )}
+        <Button
+          mt="auto"
+          variant="ghost"
+          colorPalette="red"
+          justifyContent="flex-start"
+          disabled={logoutMutation.isPending}
+          onClick={() =>
+            logoutMutation.mutate(undefined, {
+              onSuccess: () => router.replace("/login"),
+            })
+          }
+        >
+          {logoutMutation.isPending ? "Logging out..." : "Log out"}
         </Button>
       </Stack>
       <Flex as="main" flex="1" justify="center" p="8">

@@ -10,12 +10,15 @@ import {
   Stack,
   Text,
 } from "@chakra-ui/react"
+import { login } from "@/api/auth"
+import { useMutation } from "@tanstack/react-query"
 import NextLink from "next/link"
+import { useRouter } from "next/navigation"
 import { useState, type FormEvent } from "react"
 import { z } from "zod"
 
 const loginSchema = z.object({
-  email: z.string().trim().email("Enter a valid email address."),
+  email: z.email("Enter a valid email address."),
   password: z.string().min(1, "Password is required."),
 })
 
@@ -23,9 +26,12 @@ type LoginErrors = Partial<Record<"email" | "password", string>>
 
 export function LoginForm() {
   const [errors, setErrors] = useState<LoginErrors>({})
+  const router = useRouter()
+  const loginMutation = useMutation({ mutationFn: login })
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    loginMutation.reset()
 
     const formData = new FormData(event.currentTarget)
     const result = loginSchema.safeParse(Object.fromEntries(formData.entries()))
@@ -42,6 +48,10 @@ export function LoginForm() {
     }
 
     setErrors({})
+
+    loginMutation.mutate(result.data, {
+      onSuccess: () => router.replace("/workspace"),
+    })
   }
 
   return (
@@ -69,6 +79,11 @@ export function LoginForm() {
         </Stack>
         <form noValidate onSubmit={handleSubmit}>
           <Stack gap="4">
+            {loginMutation.isError && (
+              <Text role="alert" color="red.500">
+                {loginMutation.error.message}
+              </Text>
+            )}
             <Field.Root required invalid={Boolean(errors.email)}>
               <Field.Label>Email</Field.Label>
               <Input
@@ -91,8 +106,13 @@ export function LoginForm() {
                 <Field.ErrorText>{errors.password}</Field.ErrorText>
               )}
             </Field.Root>
-            <Button type="submit" colorPalette="teal" w="full">
-              Sign in
+            <Button
+              type="submit"
+              colorPalette="teal"
+              w="full"
+              disabled={loginMutation.isPending}
+            >
+              {loginMutation.isPending ? "Signing in..." : "Sign in"}
             </Button>
           </Stack>
         </form>
