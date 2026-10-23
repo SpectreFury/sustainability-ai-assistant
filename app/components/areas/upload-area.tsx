@@ -64,6 +64,7 @@ export function UploadArea() {
     mutationFn: processDocuments,
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
   })
+  const hasDocuments = (documentsQuery.data?.length ?? 0) > 0
 
   return (
     <Stack w="full" maxW="7xl" gap="6">
@@ -104,7 +105,7 @@ export function UploadArea() {
           {({ acceptedFiles }) => {
             return (
             <>
-              {acceptedFiles.length === 0 ? (
+              {acceptedFiles.length === 0 && !hasDocuments ? (
                 <FileUpload.Dropzone
                   w="full"
                   minH={{ base: "64", md: "80" }}
@@ -241,15 +242,20 @@ function SavedDocumentTile({ document }: { document: DocumentRecord }) {
       <DocumentIcon filename={document.filename} />
       <Stack gap="0">
         <Text fontWeight="medium">{document.filename}</Text>
-        <Text color="fg.muted" fontSize="sm">
-          {document.error_message ??
-            {
-              pending: "Pending processing",
-              processing: "Processing",
-              success: "Processed",
-              failed: "Failed",
-            }[document.status]}
-        </Text>
+        <HStack gap="2">
+          {document.status === "processing" && !document.error_message && (
+            <Spinner size="xs" color="yellow.500" />
+          )}
+          <Text color="fg.muted" fontSize="sm">
+            {document.error_message ??
+              {
+                pending: "Pending processing",
+                processing: "Processing",
+                success: "Processed",
+                failed: "Failed",
+              }[document.status]}
+          </Text>
+        </HStack>
       </Stack>
     </Flex>
   )

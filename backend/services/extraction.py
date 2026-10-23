@@ -4,7 +4,8 @@ from pathlib import PurePath
 
 import httpx
 
-from services.fact_extraction import ExtractedDocument, extract_document_facts
+from schemas.extraction import Extraction
+from services.fact_extraction import extract_document_facts
 from services.errors import TemporaryExtractionError
 from utils.cloudinary import create_signed_raw_download_url
 
@@ -81,7 +82,7 @@ async def extract_document(
     filename: str,
     content: bytes,
     trace_context: dict[str, str] | None = None,
-) -> ExtractedDocument:
+) -> Extraction:
     return await extract_document_facts(
         filename,
         content,

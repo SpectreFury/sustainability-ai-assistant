@@ -1,223 +1,369 @@
-import os
+import asyncio
+import io
 import unittest
 from contextlib import nullcontext
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
-from io import BytesIO
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+import pymupdf
 from openpyxl import Workbook
-from pypdf import PdfWriter
 
 from schemas.documents import DocumentResponse, sanitize_document_error
-from services.fact_extraction import (
-    EvidenceCandidate,
-    ExtractedDocument,
-    FactCandidate,
-    extract_pdf_facts,
-    extract_spreadsheet_facts,
-    _parse_date,
-    _parse_decimal,
+from schemas.extraction import (
+    Extraction,
+    ExtractionOut,
+    Fact,
+    FactOut,
+    Locator,
+    Segment,
+    SourceOut,
 )
-from services.fact_persistence import persist_extracted_facts
+from services.fact_extraction import _invoke_model, extract_document_facts
+from services.fact_persistence import persist_extraction
+from services.source_verification import expand_cell_range, verify_fact_source
 from services.llm_observability import langfuse_observation
+from services.monthly_fact_splitting import split_monthly_column_facts
+from services.parsing import ParsedDocument, UnsupportedDocumentError, parse_document
+from services.pipeline import get_pipeline
+
+
+def _pdf_with_pages(*page_texts: str) -> bytes:
+    document = pymupdf.open()
+    for page_text in page_texts:
+        page = document.new_page()
+        if page_text:
+            page.insert_text((72, 72), page_text)
+    data = document.tobytes()
+    document.close()
+    return data
+
+
+def _monthly_workbook() -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Monthly Summary 2026"
+    sheet.append(["Month", "Grid Consumption (kWh)"])
+    sheet.append(["January", 100])
+    sheet.append(["February", 200])
+    sheet.append(["March", 300])
+    sheet.append(["ANNUAL TOTAL", 650])
+    sheet["B6"] = "=SUM(B2:B4)"
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _output_fact(**overrides) -> FactOut:
+    values = {
+        "key": "units_consumed_kwh_2024_04",
+        "label": "Units consumed",
+        "category": "consumption",
+        "metric": "electricity",
+        "series": None,
+        "value_text": "47,407 kWh",
+        "value_number": 47407.0,
+        "unit": "kWh",
+        "period_start": "2024-04-01",
+        "period_end": "2024-04-30",
+        "note": None,
+        "source": SourceOut(
+            page=1,
+            sheet=None,
+            cell_range=None,
+            quote="Units Consumed: 47,407 kWh",
+        ),
+    }
+    values.update(overrides)
+    return FactOut(**values)
 
 
 class FactExtractionTests(unittest.TestCase):
-    def test_monthly_workbook_preserves_cell_sources_and_fy(self) -> None:
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "Monthly Summary 2026"
-        sheet.append(["Annual Electricity Summary"])
-        sheet.append(
+    def test_pdf_pages_become_segments_and_scans_get_images(self) -> None:
+        source = _pdf_with_pages(
+            "Units Consumed: 47,407 kWh. Monthly electricity consumption for April 2024.",
+            "",
+        )
+        parsed = parse_document(source, "bill.pdf")
+
+        self.assertEqual(parsed.page_count, 2)
+        self.assertEqual(parsed.segments[0].locator.page, 1)
+        self.assertIn("Units Consumed", parsed.segments[0].text)
+        self.assertFalse(parsed.segments[0].scanned)
+        self.assertTrue(parsed.segments[1].scanned)
+        self.assertEqual(set(parsed.page_images), {2})
+
+    def test_xlsx_segments_keep_cell_references_values_and_formulas(self) -> None:
+        parsed = parse_document(_monthly_workbook(), "annual.xlsx")
+
+        self.assertEqual(len(parsed.segments), 1)
+        segment = parsed.segments[0]
+        self.assertEqual(segment.locator.sheet, "Monthly Summary 2026")
+        self.assertEqual(segment.locator.cell_range, "A1:B6")
+        self.assertEqual(segment.cells["B5"], 650.0)
+        self.assertIn("B6=", segment.text)
+        self.assertIn("(formula =SUM(B2:B4))", segment.text)
+
+    def test_parser_rejects_unsupported_and_corrupt_documents(self) -> None:
+        with self.assertRaises(UnsupportedDocumentError):
+            parse_document(b"not a document", "notes.txt")
+        with self.assertRaises(UnsupportedDocumentError):
+            parse_document(b"not a PDF", "broken.pdf")
+
+    def test_page_verification_handles_quotes_values_and_scans(self) -> None:
+        segments = parse_document(
+            _pdf_with_pages(
+                "Units Consumed 47,407 kWh for April. This is the reported monthly electricity usage.",
+                "",
+            ),
+            "bill.pdf",
+        ).segments
+
+        self.assertTrue(
+            verify_fact_source(segments, Locator(page=1), "Units  Consumed 47,407 kWh", Decimal("47407"))[0]
+        )
+        self.assertFalse(
+            verify_fact_source(segments, Locator(page=1), "Units Consumed 99,999 kWh", Decimal("99999"))[0]
+        )
+        self.assertFalse(verify_fact_source(segments, Locator(page=3), "anything")[0])
+        verified, reason = verify_fact_source(segments, Locator(page=2), "anything")
+        self.assertFalse(verified)
+        self.assertIn("scanned", reason)
+
+    def test_structured_cell_verification_checks_each_cited_cell(self) -> None:
+        segments = parse_document(_monthly_workbook(), "annual.xlsx").segments
+        locator = Locator(sheet="Monthly Summary 2026", cell_range="A2:B5")
+
+        self.assertTrue(
+            verify_fact_source(
+                segments,
+                locator,
+                "A2=January | B2=100 ... A5=ANNUAL TOTAL | B5=650",
+                Decimal("650"),
+                structured=True,
+            )[0]
+        )
+        valid, reason = verify_fact_source(
+            segments,
+            locator,
+            "B2=100 | B5=600",
+            structured=True,
+        )
+        self.assertFalse(valid)
+        self.assertIn("holds 650", reason)
+        self.assertEqual(expand_cell_range("$B$2:B4"), ["B2", "B3", "B4"])
+
+    def test_structured_verification_matches_two_column_pdf_quotes(self) -> None:
+        text = (
+            "Quality is End-to-End          Food Safety is Everyone's job\n"
+            "Quality is embedded across the  Each of us plays a vital role\n"
+            "entire value chain, from ideation  in delivering our promise\n"
+        )
+        segments = [Segment(ordinal=0, locator=Locator(page=1), text=text)]
+        quote = "Quality is embedded across the\nentire value chain, from ideation"
+
+        self.assertFalse(verify_fact_source(segments, Locator(page=1), quote)[0])
+        self.assertTrue(verify_fact_source(segments, Locator(page=1), quote, structured=True)[0])
+
+    def test_listed_monthly_column_is_split_into_verified_cell_facts(self) -> None:
+        segments = parse_document(_monthly_workbook(), "annual.xlsx").segments
+        listed = Fact(
+            key="monthly_grid_consumption",
+            label="Grid consumption",
+            category="consumption",
+            metric="electricity",
+            series="Grid consumption (kWh)",
+            value_text="January 100; February 200; March 300",
+            value_number=None,
+            unit="kWh",
+            period_start="2026-01-01",
+            period_end="2026-12-31",
+            locator=Locator(sheet="Monthly Summary 2026", cell_range="B2:B4"),
+            quote="January 100; February 200; March 300",
+        )
+
+        split = split_monthly_column_facts([listed], segments)
+        self.assertEqual(
+            [(fact.value_number, fact.period_start, fact.period_end) for fact in split],
             [
-                "Month",
-                "Grid Supply (kWh)",
-                "Solar Power (kWh)",
-                "Wind Power (kWh)",
-                "Total Renewable (kWh)",
-                "Total Consumption (kWh)",
-                "Renewable %",
-            ]
+                (Decimal("100.0"), "2026-01-01", "2026-01-31"),
+                (Decimal("200.0"), "2026-02-01", "2026-02-28"),
+                (Decimal("300.0"), "2026-03-01", "2026-03-31"),
+            ],
         )
-        months = (
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        )
-        for month in months:
-            sheet.append([month, 10, 2, 1, 3, 13, "23.1%"])
-        sheet.append([None])
-        sheet.append(["ANNUAL TOTAL", 120, 24, 12, 36, 155, "23.1%"])
+        self.assertTrue(all(fact.verified for fact in split))
+        self.assertEqual([fact.locator.cell_range for fact in split], ["B2", "B3", "B4"])
 
-        buffer = BytesIO()
-        workbook.save(buffer)
-        extracted = extract_spreadsheet_facts(buffer.getvalue())
-
-        january_grid = next(
-            fact
-            for fact in extracted.facts
-            if fact.metric_name == "grid_electricity_consumption"
-            and fact.period_start == date(2026, 1, 1)
+    def test_model_facts_are_structured_verified_and_calculations_separate(self) -> None:
+        source = _pdf_with_pages(
+            "Units Consumed: 47,407 kWh. Monthly electricity consumption for April 2024."
         )
-        april_grid = next(
-            fact
-            for fact in extracted.facts
-            if fact.metric_name == "grid_electricity_consumption"
-            and fact.period_start == date(2026, 4, 1)
-        )
-        renewable = next(
-            fact
-            for fact in extracted.facts
-            if fact.metric_name == "renewable_generation"
-            and fact.period_start == date(2026, 1, 1)
-        )
-        wind = next(
-            fact
-            for fact in extracted.facts
-            if fact.metric_name == "wind_generation"
-            and fact.period_start == date(2026, 1, 1)
-        )
-        monthly_percent = next(
-            fact
-            for fact in extracted.facts
-            if fact.metric_name == "renewable_share_percent"
-            and fact.period_start == date(2026, 1, 1)
-        )
-        annual_total = next(
-            fact
-            for fact in extracted.facts
-            if fact.metric_name == "total_energy_consumption"
-            and fact.aggregation_role == "reported_total"
-        )
-        delta = next(
-            fact
-            for fact in extracted.facts
-            if fact.fact_kind == "reconciliation"
-            and fact.dimensions.get("metric_name") == "total_energy_consumption"
+        output = ExtractionOut(
+            doc_type="electricity_bill",
+            title="Electricity bill",
+            organisation="Example Factory",
+            issuer="Example Power",
+            period_start="2024-04-01",
+            period_end="2024-04-30",
+            summary="April electricity bill.",
+            facts=[_output_fact()],
+            issues=[],
         )
 
-        self.assertEqual(january_grid.source_reference, "'Monthly Summary 2026'!B3")
-        self.assertEqual(january_grid.financial_year, "FY 2025-26")
-        self.assertEqual(april_grid.financial_year, "FY 2026-27")
-        self.assertEqual(renewable.metric_name, "renewable_generation")
-        self.assertEqual(wind.metric_name, "wind_generation")
-        self.assertEqual(monthly_percent.metric_value, Decimal("23.1"))
-        self.assertEqual(monthly_percent.unit, "%")
-        self.assertEqual(annual_total.financial_year_start_year, None)
-        self.assertEqual(delta.metric_value, 1)
-        self.assertTrue(any("FY 2025-26" in warning for warning in extracted.warnings))
+        with patch(
+            "services.fact_extraction._invoke_model",
+            new=AsyncMock(return_value=output),
+        ):
+            extracted = asyncio.run(extract_document_facts("bill.pdf", source))
 
-    def test_uncached_formula_is_not_misread_as_a_number(self) -> None:
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "Monthly Summary 2026"
-        sheet.append(["Month", "Total Consumption (kWh)"])
-        sheet.append(["January", "=SUM(100,200)"])
+        self.assertEqual(extracted.doc_type, "electricity_bill")
+        self.assertEqual(extracted.organisation, "Example Factory")
+        self.assertEqual(len(extracted.facts), 2)
+        reported, calculated = extracted.facts
+        self.assertTrue(reported.verified)
+        self.assertEqual(reported.value_number, Decimal("47407.0"))
+        self.assertEqual(reported.locator.page, 1)
+        self.assertEqual(calculated.origin, "calculated")
+        self.assertEqual(calculated.value_number, Decimal("1580.2333"))
+        self.assertIn("÷ 30 days", calculated.derivation)
 
-        buffer = BytesIO()
-        workbook.save(buffer)
-        extracted = extract_spreadsheet_facts(buffer.getvalue())
-        formula_fact = next(
-            fact for fact in extracted.facts if fact.period_start == date(2026, 1, 1)
+    def test_gemini_structured_model_call_uses_segment_context(self) -> None:
+        output = ExtractionOut(
+            doc_type="other",
+            title="Test document",
+            organisation=None,
+            issuer=None,
+            period_start=None,
+            period_end=None,
+            summary="A source-grounded test document.",
+            facts=[_output_fact()],
+            issues=[],
         )
 
-        self.assertEqual(formula_fact.fact_kind, "formula")
-        self.assertIsNone(formula_fact.metric_value)
-        self.assertEqual(formula_fact.raw_value, "=SUM(100,200)")
+        class FakeRaw:
+            usage_metadata = {
+                "input_tokens": 20,
+                "output_tokens": 10,
+                "total_tokens": 30,
+            }
 
-    def test_pdf_facts_keep_page_quote_and_raw_value(self) -> None:
-        class FakeStructuredModel:
-            async def ainvoke(self, _messages):
-                return {
-                    "document_kind": "utility_bill",
-                    "entity_name": "Example Factory",
-                    "facts": [
-                        {
-                            "metric_name": "previous_meter_reading",
-                            "fact_kind": "meter_reading",
-                            "aggregation_role": "observation",
-                            "value_type": "numeric",
-                            "raw_value": "12,500",
-                            "unit": "Cubic Meters",
-                            "currency_code": None,
-                            "event_date": "01-12-2025",
-                            "period_start": None,
-                            "period_end": None,
-                            "period_grain": None,
-                            "description": "Previous meter reading",
-                            "dimensions": {"meter_id": "MTR-1", "reading_type": "previous"},
-                            "page_number": 1,
-                            "source_quote": "Previous Reading (01-12-2025): 12,500 Cubic Meters",
-                            "confidence": 0.99,
-                        }
-                    ],
-                }
+        class FakeRunnable:
+            messages = None
+
+            async def ainvoke(self, messages):
+                self.messages = messages
+                return {"parsed": output, "parsing_error": None, "raw": FakeRaw()}
+
+        runnable = FakeRunnable()
 
         class FakeChatModel:
-            def __init__(self, **_kwargs):
-                pass
+            options = None
 
-            def with_structured_output(self, _schema, **_kwargs):
-                return FakeStructuredModel()
+            def __init__(self, **options):
+                self.options = options
+                FakeChatModel.options = options
 
-        writer = PdfWriter()
-        writer.add_blank_page(width=100, height=100)
-        pdf_buffer = BytesIO()
-        writer.write(pdf_buffer)
+            def with_structured_output(self, schema, *, include_raw):
+                self.schema = schema
+                self.include_raw = include_raw
+                return runnable
 
-        async def run_extraction():
-            return await extract_pdf_facts(pdf_buffer.getvalue())
-
+        parsed = ParsedDocument(
+            filename="bill.pdf",
+            kind="pdf",
+            page_count=1,
+            segments=[
+                Segment(
+                    ordinal=0,
+                    locator=Locator(page=1),
+                    text="Units Consumed: 47,407 kWh. Monthly electricity use for April 2024.",
+                )
+            ],
+        )
         with (
-            patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}),
+            patch.dict(
+                "os.environ",
+                {"GEMINI_API_KEY": "test-key", "GEMINI_MODEL": "gemini-test"},
+            ),
             patch("langchain_google_genai.ChatGoogleGenerativeAI", FakeChatModel),
             patch(
                 "services.fact_extraction.langfuse_observation",
                 side_effect=lambda **_kwargs: nullcontext(None),
             ),
         ):
-            import asyncio
+            extracted = asyncio.run(
+                _invoke_model(b"pdf bytes", parsed, get_pipeline("improved"), None)
+            )
 
-            extracted = asyncio.run(run_extraction())
+        self.assertEqual(extracted.doc_type, "other")
+        self.assertEqual(FakeChatModel.options["model"], "gemini-test")
+        self.assertEqual(FakeChatModel.options["temperature"], 0)
+        self.assertTrue(runnable.messages)
+        self.assertIn("meticulous sustainability data analyst", runnable.messages[0].content)
+        self.assertIn("Units Consumed", runnable.messages[1].content[1]["text"])
 
-        fact = extracted.facts[0]
-        self.assertEqual(extracted.document_kind, "utility_bill")
-        self.assertEqual(extracted.entity_name, "Example Factory")
-        self.assertEqual(fact.metric_value, Decimal("12500"))
-        self.assertEqual(fact.raw_value, "12,500")
-        self.assertEqual(fact.source_reference, "PDF page 1")
-        self.assertEqual(fact.evidence.page_number, 1)
-        self.assertIn("Previous Reading", fact.evidence.quote)
+    def test_persistence_sanitizes_text_and_stores_segments_with_facts(self) -> None:
+        class RecordingSession:
+            def __init__(self):
+                self.rows = []
 
-    def test_decimal_and_date_normalization_keep_source_values_separate(self) -> None:
-        self.assertEqual(_parse_decimal("₹1,23,456.75"), 123456.75)
-        self.assertEqual(_parse_decimal("500.00Cr"), -500)
-        self.assertEqual(_parse_date("31st August 2026"), date(2026, 8, 31))
-        self.assertEqual(_parse_date("10.03.2023"), date(2023, 3, 10))
+            def add_all(self, rows):
+                self.rows.extend(rows)
+
+        extracted = Extraction(
+            doc_type="other",
+            title="Test document",
+            summary="Test.",
+            facts=[
+                Fact(
+                    key="reported_quantity\x00",
+                    label="Units\x00 consumed",
+                    category="quantity",
+                    value_text="2\x00321 units",
+                    value_number=Decimal("2321"),
+                    locator=Locator(page=1),
+                    quote="Units\x00 consumed: 2,321",
+                    verified=True,
+                    verification="Quote found on p.1",
+                )
+            ],
+            issues=[],
+            segments=[
+                Segment(
+                    ordinal=0,
+                    locator=Locator(page=1),
+                    text="Units\x00 consumed: 2,321",
+                )
+            ],
+            model="gemini-test",
+            pipeline="improved",
+        )
+        session = RecordingSession()
+
+        asyncio.run(
+            persist_extraction(
+                session,
+                document_id=uuid4(),
+                run=SimpleNamespace(id=uuid4()),
+                extracted=extracted,
+            )
+        )
+
+        self.assertEqual(len(session.rows), 2)
+        segment, fact = session.rows
+        self.assertNotIn("\x00", fact.key)
+        self.assertNotIn("\x00", fact.quote)
+        self.assertNotIn("\x00", segment.text)
+        self.assertEqual(fact.value_number, Decimal("2321"))
+        self.assertEqual(segment.locator, {"page": 1})
 
     def test_internal_database_errors_are_not_user_facing(self) -> None:
-        internal = (
-            "sqlalchemy.exc.IntegrityError: violates foreign key constraint "
-            "[SQL: INSERT INTO extracted_records]"
-        )
+        internal = "sqlalchemy.exc.IntegrityError: INSERT INTO facts"
         self.assertEqual(
             sanitize_document_error(internal),
             "Document processing failed. Please try again or contact support.",
-        )
-        self.assertEqual(
-            sanitize_document_error("This PDF is password-protected and cannot be processed."),
-            "This PDF is password-protected and cannot be processed.",
         )
         response = DocumentResponse(
             id=uuid4(),
@@ -234,61 +380,7 @@ class FactExtractionTests(unittest.TestCase):
             "Document processing failed. Please try again or contact support.",
         )
 
-    def test_source_evidence_is_flushed_before_fact_foreign_keys(self) -> None:
-        class RecordingSession:
-            def __init__(self):
-                self.events = []
-                self.rows = []
-
-            def add_all(self, rows):
-                self.rows.extend(rows)
-                self.events.append(("add_all", {type(row).__name__ for row in rows}))
-
-            async def flush(self):
-                self.events.append(("flush", set()))
-
-        session = RecordingSession()
-        extracted = ExtractedDocument(
-            document_kind="utility_bill",
-            facts=[
-                FactCandidate(
-                    metric_name="reported_consumption",
-                    metric_value=Decimal("2321"),
-                    raw_value="2\x00321",
-                    unit="m³",
-                    dimensions={"meter_id": "MTR\x00-1"},
-                    source_reference="PDF page 1",
-                    evidence=EvidenceCandidate(
-                        evidence_kind="pdf_page",
-                        page_number=1,
-                        quote="Units\x00 consumed: 2,321 cubic meters",
-                    ),
-                )
-            ],
-        )
-
-        async def persist():
-            await persist_extracted_facts(
-                session,
-                document_id=uuid4(),
-                run=type("Run", (), {"id": uuid4()})(),
-                document_kind="utility_bill",
-                extracted=extracted,
-            )
-
-        import asyncio
-
-        asyncio.run(persist())
-        self.assertEqual(session.events[0][1], {"SourceEvidence"})
-        self.assertEqual(session.events[1][0], "flush")
-        self.assertEqual(session.events[2][1], {"ExtractedRecord"})
-        evidence = next(row for row in session.rows if type(row).__name__ == "SourceEvidence")
-        fact = next(row for row in session.rows if type(row).__name__ == "ExtractedRecord")
-        self.assertNotIn("\x00", evidence.quote)
-        self.assertNotIn("\x00", fact.raw_value)
-        self.assertNotIn("\x00", fact.dimensions["meter_id"])
-
-    def test_langfuse_observation_wraps_a_generation_when_configured(self) -> None:
+    def test_langfuse_observation_remains_optional(self) -> None:
         class FakeObservation:
             def __init__(self):
                 self.updates = []
@@ -316,9 +408,7 @@ class FactExtractionTests(unittest.TestCase):
                 return FakeContext(self.observation)
 
         client = FakeClient()
-        with patch(
-            "services.llm_observability.get_langfuse_client", return_value=client
-        ):
+        with patch("services.llm_observability.get_langfuse_client", return_value=client):
             with langfuse_observation(
                 as_type="generation",
                 name="test-generation",
@@ -327,10 +417,7 @@ class FactExtractionTests(unittest.TestCase):
                 observation.update(output={"fact_count": 1})
 
         self.assertEqual(client.attributes["name"], "test-generation")
-        self.assertEqual(
-            client.observation.updates,
-            [{"output": {"fact_count": 1}}],
-        )
+        self.assertEqual(client.observation.updates, [{"output": {"fact_count": 1}}])
 
 
 if __name__ == "__main__":

@@ -189,7 +189,7 @@ async def queue_pending_documents(
             document_id=document.id,
             attempt_number=document.attempt_count + 1,
             status="queued",
-            extraction_version="facts-v2",
+            extraction_version="benchmark-facts-v1",
         )
         document.attempt_count = run.attempt_number
         document.status = "processing"

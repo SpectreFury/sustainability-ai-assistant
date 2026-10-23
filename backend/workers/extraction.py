@@ -10,7 +10,7 @@ from db import SessionLocal
 from models import Document, ExtractionRun
 from services.errors import TemporaryExtractionError
 from services.extraction import download_document, extract_document
-from services.fact_persistence import persist_extracted_facts
+from services.fact_persistence import persist_extraction
 from services.text_sanitization import sanitize_json, sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -88,26 +88,35 @@ async def process_document(extraction_run_id: str) -> None:
             ):
                 return
 
-            await persist_extracted_facts(
+            await persist_extraction(
                 session,
                 document_id=document.id,
                 run=run,
-                document_kind=extracted.document_kind,
                 extracted=extracted,
             )
 
             run.status = "succeeded"
             run.completed_at = datetime.now(UTC)
+            run.model_name = extracted.model
             run.result_metadata = sanitize_json(
                 {
                     "fact_count": len(extracted.facts),
-                    "source_evidence_count": len(extracted.source_evidence)
-                    + len(extracted.facts),
-                    "warnings": extracted.warnings,
+                    "verified_fact_count": sum(fact.verified for fact in extracted.facts),
+                    "unverified_fact_count": sum(not fact.verified for fact in extracted.facts),
+                    "segment_count": len(extracted.segments),
+                    "issues": extracted.issues,
+                    "title": extracted.title,
+                    "issuer": extracted.issuer,
+                    "summary": extracted.summary,
+                    "period_start": extracted.period_start,
+                    "period_end": extracted.period_end,
+                    "page_count": extracted.page_count,
+                    "model": extracted.model,
+                    "pipeline": extracted.pipeline,
                 }
             )
-            document.document_kind = sanitize_text(extracted.document_kind) or "unknown"
-            document.entity_name = sanitize_text(extracted.entity_name)
+            document.document_kind = sanitize_text(extracted.doc_type) or "unknown"
+            document.entity_name = sanitize_text(extracted.organisation)
             document.status = "success"
             document.error_message = None
             document.processing_started_at = None
@@ -231,11 +240,12 @@ def _user_facing_error(error: Exception, *, retrying: bool = False) -> str:
             "This PDF is password-protected and cannot be processed."
         ),
         "Downloaded document is empty.": "The uploaded file is empty or unavailable.",
+        "The uploaded document is empty.": "The uploaded file is empty or unavailable.",
         "Downloaded document checksum does not match the uploaded file.": (
             "File verification failed. Please upload the document again."
         ),
-        "Set GEMINI_API_KEY to enable PDF extraction.": (
-            "PDF extraction is not configured. Please contact your administrator."
+        "Set GEMINI_API_KEY to enable document extraction.": (
+            "Document extraction is not configured. Please contact your administrator."
         ),
         "No supported facts were extracted from this document.": (
             "No supported information could be extracted from this document."
@@ -243,11 +253,19 @@ def _user_facing_error(error: Exception, *, retrying: bool = False) -> str:
         "No verifiable facts were extracted from the PDF.": (
             "No verifiable information could be extracted from this PDF."
         ),
+        "The model returned no structured extraction.": (
+            "No supported information could be extracted from this document."
+        ),
+        "Only PDF and XLSX documents are supported.": (
+            "Only PDF and XLSX documents are supported."
+        ),
     }
     if message in known_messages:
         return known_messages[message]
     if "size limit" in message.casefold():
         return "This document exceeds the configured processing size limit."
+    if "password protected" in message.casefold():
+        return "This PDF is password-protected and cannot be processed."
     if "unsupported file type" in message.casefold():
         return "Only PDF and XLSX documents are supported."
     if "cloudinary" in message.casefold():
