@@ -1,6 +1,7 @@
 import {
   Button,
   FileUpload,
+  Flex,
   HStack,
   Heading,
   Icon,
@@ -8,13 +9,22 @@ import {
   Stack,
   Text,
 } from "@chakra-ui/react"
-import { uploadDocuments } from "@/api/documents"
-import { useMutation } from "@tanstack/react-query"
+import {
+  getDocuments,
+  uploadDocuments,
+  type DocumentRecord,
+  type FileUploadStatus,
+} from "@/api/documents"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { LuFile, LuFileSpreadsheet, LuFileText, LuUpload } from "react-icons/lu"
 import { useState } from "react"
 
-function DocumentIcon({ file }: { file: File }) {
-  const extension = file.name.split(".").pop()?.toLowerCase()
+function fileKey(file: File) {
+  return `${file.name}-${file.size}-${file.lastModified}`
+}
+
+function DocumentIcon({ filename }: { filename: string }) {
+  const extension = filename.split(".").pop()?.toLowerCase()
   const isPdf = extension === "pdf"
   const isSpreadsheet = ["xlsx", "xls", "csv"].includes(extension ?? "")
   const FileTypeIcon = isPdf
@@ -31,18 +41,19 @@ function DocumentIcon({ file }: { file: File }) {
 }
 
 export function UploadArea() {
-  const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set())
+  const [fileStatuses, setFileStatuses] = useState<Record<string, FileUploadStatus>>({})
+  const queryClient = useQueryClient()
+  const documentsQuery = useQuery({
+    queryKey: ["documents"],
+    queryFn: getDocuments,
+    retry: false,
+  })
   const uploadMutation = useMutation({
     mutationFn: (files: File[]) =>
-      uploadDocuments(files, (file, index, uploading) => {
-        const key = `${file.name}-${index}`
-        setUploadingFiles((current) => {
-          const next = new Set(current)
-          if (uploading) next.add(key)
-          else next.delete(key)
-          return next
-        })
-      }),
+      uploadDocuments(files, (file, status) =>
+        setFileStatuses((current) => ({ ...current, [fileKey(file)]: status })),
+      ),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
   })
 
   return (
@@ -54,15 +65,29 @@ export function UploadArea() {
         maxFiles={10}
         colorPalette="teal"
         onFileChange={({ acceptedFiles }) => {
+          const acceptedKeys = new Set(acceptedFiles.map(fileKey))
+          const filesToUpload = acceptedFiles.filter(
+            (file) =>
+              fileStatuses[fileKey(file)] !== "uploaded" &&
+              fileStatuses[fileKey(file)] !== "uploading",
+          )
+          setFileStatuses((current) =>
+            Object.fromEntries(
+              Object.entries(current).filter(([key]) => acceptedKeys.has(key)),
+            ),
+          )
+          if (!uploadMutation.isPending) uploadMutation.reset()
           if (acceptedFiles.length === 0) {
             uploadMutation.reset()
-            setUploadingFiles(new Set())
+          } else if (filesToUpload.length > 0 && !uploadMutation.isPending) {
+            uploadMutation.mutate(filesToUpload)
           }
         }}
       >
         <FileUpload.HiddenInput />
         <FileUpload.Context>
-          {({ acceptedFiles }) => (
+          {({ acceptedFiles }) => {
+            return (
             <>
               {acceptedFiles.length === 0 ? (
                 <FileUpload.Dropzone
@@ -92,7 +117,7 @@ export function UploadArea() {
                     variant="outline"
                     colorPalette="teal"
                     alignSelf="flex-start"
-                    disabled={uploadMutation.isPending || uploadMutation.isSuccess}
+                    disabled={uploadMutation.isPending}
                   >
                     Add documents
                   </Button>
@@ -106,16 +131,26 @@ export function UploadArea() {
                       file={file}
                     >
                       <FileUpload.ItemPreview>
-                        <DocumentIcon file={file} />
+                        <DocumentIcon filename={file.name} />
                       </FileUpload.ItemPreview>
                       <FileUpload.ItemContent>
                         <FileUpload.ItemName />
                         <FileUpload.ItemSizeText />
-                        {uploadingFiles.has(`${file.name}-${index}`) && (
+                        {fileStatuses[fileKey(file)] === "uploading" && (
                           <HStack gap="2" color="fg.muted">
                             <Spinner size="xs" color="teal.500" />
                             <Text fontSize="sm">Uploading document</Text>
                           </HStack>
+                        )}
+                        {fileStatuses[fileKey(file)] === "uploaded" && (
+                          <Text fontSize="sm" color="green.600">
+                            Uploaded
+                          </Text>
+                        )}
+                        {fileStatuses[fileKey(file)] === "failed" && (
+                          <Text fontSize="sm" color="red.500">
+                            Upload failed
+                          </Text>
                         )}
                       </FileUpload.ItemContent>
                       <FileUpload.ItemDeleteTrigger
@@ -126,36 +161,68 @@ export function UploadArea() {
                   ))}
                 </FileUpload.ItemGroup>
               )}
-              {acceptedFiles.length > 0 && (
-                <Stack w="full" gap="3">
-                  {uploadMutation.isError && (
-                    <Text role="alert" color="red.500">
-                      {uploadMutation.error.message}
-                    </Text>
-                  )}
-                  {uploadMutation.isSuccess && (
-                    <Text role="status" color="green.600">
-                      Documents uploaded successfully.
-                    </Text>
-                  )}
-                  <Button
-                    alignSelf="flex-start"
-                    colorPalette="teal"
-                    disabled={uploadMutation.isPending || uploadMutation.isSuccess}
-                    onClick={() => uploadMutation.mutate(acceptedFiles)}
-                  >
-                    {uploadMutation.isPending
-                      ? "Uploading documents..."
-                      : uploadMutation.isSuccess
-                        ? "Upload complete"
-                        : "Start processing"}
-                  </Button>
-                </Stack>
+              {uploadMutation.isError && (
+                <Text role="alert" color="red.500">
+                  {uploadMutation.error.message}
+                </Text>
+              )}
+              {uploadMutation.isSuccess && (
+                <Text role="status" color="green.600">
+                  Documents uploaded successfully.
+                </Text>
               )}
             </>
-          )}
+            )
+          }}
         </FileUpload.Context>
       </FileUpload.Root>
+      {documentsQuery.isPending && (
+        <Text color="fg.muted">Loading uploaded documents...</Text>
+      )}
+      {documentsQuery.isError && (
+        <Text role="alert" color="red.500">
+          {documentsQuery.error.message}
+        </Text>
+      )}
+      {documentsQuery.data && documentsQuery.data.length > 0 && (
+        <Stack w="full" gap="3">
+          <Heading size="lg">Uploaded documents</Heading>
+          {documentsQuery.data.map((document) => (
+            <SavedDocumentTile key={document.id} document={document} />
+          ))}
+          {documentsQuery.data.some((document) => document.status === "pending") && (
+            <Button alignSelf="flex-start" colorPalette="teal" disabled>
+              Start processing
+            </Button>
+          )}
+        </Stack>
+      )}
     </Stack>
+  )
+}
+
+function SavedDocumentTile({ document }: { document: DocumentRecord }) {
+  return (
+    <Flex
+      align="center"
+      gap="3"
+      w="full"
+      p="4"
+      bg="bg"
+      borderWidth="1px"
+      borderColor="border"
+      borderRadius="l2"
+    >
+      <DocumentIcon filename={document.filename} />
+      <Stack gap="0">
+        <Text fontWeight="medium">{document.filename}</Text>
+        <Text color="fg.muted" fontSize="sm">
+          {document.error_message ??
+            (document.status === "pending"
+              ? "Pending processing"
+              : document.status)}
+        </Text>
+      </Stack>
+    </Flex>
   )
 }
