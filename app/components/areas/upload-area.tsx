@@ -11,6 +11,7 @@ import {
 } from "@chakra-ui/react"
 import {
   getDocuments,
+  processDocuments,
   uploadDocuments,
   type DocumentRecord,
   type FileUploadStatus,
@@ -47,12 +48,20 @@ export function UploadArea() {
     queryKey: ["documents"],
     queryFn: getDocuments,
     retry: false,
+    refetchInterval: (query) =>
+      query.state.data?.some((document) => document.status === "processing")
+        ? 3000
+        : false,
   })
   const uploadMutation = useMutation({
     mutationFn: (files: File[]) =>
       uploadDocuments(files, (file, status) =>
         setFileStatuses((current) => ({ ...current, [fileKey(file)]: status })),
       ),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
+  })
+  const processMutation = useMutation({
+    mutationFn: processDocuments,
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
   })
 
@@ -63,6 +72,12 @@ export function UploadArea() {
       </Stack>
       <FileUpload.Root
         maxFiles={10}
+        accept={{
+          "application/pdf": [".pdf"],
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
+            ".xlsx",
+          ],
+        }}
         colorPalette="teal"
         onFileChange={({ acceptedFiles }) => {
           const acceptedKeys = new Set(acceptedFiles.map(fileKey))
@@ -191,9 +206,19 @@ export function UploadArea() {
             <SavedDocumentTile key={document.id} document={document} />
           ))}
           {documentsQuery.data.some((document) => document.status === "pending") && (
-            <Button alignSelf="flex-start" colorPalette="teal" disabled>
+            <Button
+              alignSelf="flex-start"
+              colorPalette="teal"
+              onClick={() => processMutation.mutate()}
+              loading={processMutation.isPending}
+            >
               Start processing
             </Button>
+          )}
+          {processMutation.isError && (
+            <Text role="alert" color="red.500">
+              {processMutation.error.message}
+            </Text>
           )}
         </Stack>
       )}
@@ -218,9 +243,12 @@ function SavedDocumentTile({ document }: { document: DocumentRecord }) {
         <Text fontWeight="medium">{document.filename}</Text>
         <Text color="fg.muted" fontSize="sm">
           {document.error_message ??
-            (document.status === "pending"
-              ? "Pending processing"
-              : document.status)}
+            {
+              pending: "Pending processing",
+              processing: "Processing",
+              success: "Processed",
+              failed: "Failed",
+            }[document.status]}
         </Text>
       </Stack>
     </Flex>

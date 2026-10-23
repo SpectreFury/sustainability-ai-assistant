@@ -37,6 +37,24 @@ export async function getDocuments(): Promise<DocumentRecord[]> {
   return response.json()
 }
 
+export async function processDocuments(): Promise<DocumentRecord[]> {
+  if (!backendUrl) throw new Error("NEXT_PUBLIC_BACKEND_URL is not set.")
+
+  const response = await fetch(`${backendUrl}/documents/process`, {
+    method: "POST",
+    credentials: "include",
+  })
+  if (!response.ok) {
+    const result = await response.json().catch(() => null)
+    throw new Error(
+      typeof result?.detail === "string"
+        ? result.detail
+        : "Unable to start document processing.",
+    )
+  }
+  return response.json()
+}
+
 export async function uploadDocuments(
   files: File[],
   onFileStatus?: (file: File, status: FileUploadStatus) => void,

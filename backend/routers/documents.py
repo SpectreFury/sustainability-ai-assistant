@@ -20,6 +20,7 @@ from services.document_service import (
     create_upload_signature,
     fail_document_upload,
     list_user_documents,
+    queue_pending_documents,
 )
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -62,6 +63,18 @@ async def upload_failed(
     return await fail_document_upload(
         session, user.id, document_id, payload.error_message
     )
+
+
+@router.post(
+    "/process",
+    response_model=list[DocumentResponse],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def process_pending_documents(
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> list[DocumentResponse]:
+    return await queue_pending_documents(session, user.id)
 
 
 @router.get("", response_model=list[DocumentResponse])

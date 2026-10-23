@@ -104,7 +104,11 @@ async def complete_document_upload(
         raise HTTPException(status_code=404, detail="Document not found.")
     if document.cloudinary_public_id != payload.cloudinary_public_id:
         raise HTTPException(status_code=400, detail="Invalid Cloudinary asset.")
-    if urlparse(str(payload.cloudinary_url)).hostname != "res.cloudinary.com":
+    cloudinary_url = urlparse(str(payload.cloudinary_url))
+    if (
+        cloudinary_url.scheme != "https"
+        or cloudinary_url.hostname != "res.cloudinary.com"
+    ):
         raise HTTPException(status_code=400, detail="Invalid Cloudinary URL.")
 
     document.cloudinary_url = str(payload.cloudinary_url)
@@ -147,3 +151,81 @@ async def list_user_documents(
         .order_by(Document.upload_timestamp.desc())
     )
     return list(documents)
+
+
+async def queue_pending_documents(
+    session: AsyncSession,
+    user_id: int,
+) -> list[Document]:
+    pending = await session.scalars(
+        select(Document)
+        .where(Document.user_id == user_id, Document.status == "pending")
+        .order_by(Document.upload_timestamp)
+        .with_for_update(skip_locked=True)
+    )
+    documents = list(pending)
+    if not documents:
+        return []
+
+    queueable: list[Document] = []
+    for document in documents:
+        if not document.cloudinary_url:
+            document.status = "failed"
+            document.error_message = (
+                "The upload has not completed, so it cannot be processed."
+            )
+            continue
+
+        extension = PurePath(document.filename).suffix.lower()
+        if extension not in {".xlsx", ".pdf"}:
+            document.status = "failed"
+            document.error_message = (
+                "Unsupported file type. Only .xlsx and .pdf are supported."
+            )
+            continue
+        queueable.append(document)
+
+    if not queueable:
+        await session.commit()
+        return documents
+
+    try:
+        from workers.extraction import process_document
+    except RuntimeError as error:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Document processing is unavailable. Configure REDIS_URL and "
+                "start the worker."
+            ),
+        ) from error
+
+    for document in queueable:
+        document.status = "processing"
+        document.error_message = None
+    await session.commit()
+
+    queue_failures = 0
+    for document in queueable:
+        try:
+            await process_document.kiq(str(document.id))
+        except Exception:
+            queue_failures += 1
+            document.status = "pending"
+            document.error_message = (
+                "Could not submit this job to the worker queue. Please try again."
+            )
+            await session.commit()
+        await session.refresh(document)
+
+    for document in documents:
+        if document not in queueable:
+            await session.refresh(document)
+
+    if queue_failures == len(queueable):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not submit processing jobs. Check Redis and try again.",
+        )
+    return documents
