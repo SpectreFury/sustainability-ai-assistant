@@ -1,5 +1,6 @@
 import os
 import re
+import hashlib
 from calendar import monthrange
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -17,6 +18,11 @@ from prompts.pdf_extraction import PDF_SYSTEM_PROMPT, PDF_USER_PROMPT
 from services.fiscal_year import (
     financial_year_for_period,
     financial_year_label,
+)
+from services.llm_observability import (
+    capture_content_enabled,
+    langfuse_observation,
+    update_observation,
 )
 from services.text_sanitization import sanitize_json, sanitize_text
 
@@ -162,12 +168,16 @@ _ADDITIVE_METRICS = {
 }
 
 
-async def extract_document_facts(filename: str, content: bytes) -> ExtractedDocument:
+async def extract_document_facts(
+    filename: str,
+    content: bytes,
+    trace_context: dict[str, str] | None = None,
+) -> ExtractedDocument:
     extension = PurePath(filename).suffix.casefold()
     if extension == ".xlsx":
         return extract_spreadsheet_facts(content)
     if extension == ".pdf":
-        return await extract_pdf_facts(content)
+        return await extract_pdf_facts(content, trace_context=trace_context)
     raise ValueError("Unsupported file type. Only .xlsx and .pdf are supported.")
 
 
@@ -513,7 +523,10 @@ def extract_spreadsheet_facts(content: bytes) -> ExtractedDocument:
     )
 
 
-async def extract_pdf_facts(content: bytes) -> ExtractedDocument:
+async def extract_pdf_facts(
+    content: bytes,
+    trace_context: dict[str, str] | None = None,
+) -> ExtractedDocument:
     reader = PdfReader(BytesIO(content), strict=False)
     if reader.is_encrypted:
         raise ValueError("Encrypted PDFs are not supported.")
@@ -537,39 +550,7 @@ async def extract_pdf_facts(content: bytes) -> ExtractedDocument:
         for page_number, page_text in enumerate(page_texts, start=1)
         if page_text.strip()
     ]
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise ValueError("Set GEMINI_API_KEY to enable PDF extraction.")
-
-    from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_google_genai import ChatGoogleGenerativeAI
-
-    model = ChatGoogleGenerativeAI(
-        model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
-        api_key=api_key,
-        temperature=0,
-    ).with_structured_output(PdfExtractionResponse)
-    text_context = "\n\n".join(
-        f"--- PDF page {index + 1} ---\n{text[:16000]}"
-        for index, text in enumerate(page_texts)
-        if text.strip()
-    )
-    user_text = PDF_USER_PROMPT
-    if text_context:
-        user_text += f"\n\nExtracted page text for exact citations:\n{text_context}"
-
-    result = await model.ainvoke(
-        [
-            SystemMessage(content=PDF_SYSTEM_PROMPT),
-            HumanMessage(
-                content=[
-                    {"type": "text", "text": user_text},
-                    {"type": "media", "mime_type": "application/pdf", "data": content},
-                ]
-            ),
-        ]
-    )
-    extraction = PdfExtractionResponse.model_validate(result)
+    extraction = await _invoke_pdf_model(content, page_texts, trace_context)
     facts: list[FactCandidate] = []
     warnings: list[str] = []
 
@@ -665,6 +646,161 @@ async def extract_pdf_facts(content: bytes) -> ExtractedDocument:
         source_evidence=source_evidence,
         warnings=warnings,
     )
+
+
+async def _invoke_pdf_model(
+    content: bytes,
+    page_texts: list[str],
+    trace_context: dict[str, str] | None,
+) -> PdfExtractionResponse:
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("Set GEMINI_API_KEY to enable PDF extraction.")
+
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    model_name = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+    model = ChatGoogleGenerativeAI(
+        model=model_name,
+        api_key=api_key,
+    ).with_structured_output(PdfExtractionResponse, include_raw=True)
+    text_context = "\n\n".join(
+        f"--- PDF page {index + 1} ---\n{text[:16000]}"
+        for index, text in enumerate(page_texts)
+        if text.strip()
+    )
+    user_text = PDF_USER_PROMPT
+    if text_context:
+        user_text += f"\n\nExtracted page text for exact citations:\n{text_context}"
+
+    trace_metadata = {
+        **(trace_context or {}),
+        "document_format": "pdf",
+        "page_count": str(len(page_texts)),
+        "content_sha256": hashlib.sha256(content).hexdigest(),
+        "prompt_version": "pdf-facts-v1",
+    }
+    trace_input: dict[str, Any] = {
+        "document_id": trace_metadata.get("document_id"),
+        "extraction_run_id": trace_metadata.get("extraction_run_id"),
+        "page_count": len(page_texts),
+        "content_sha256": trace_metadata["content_sha256"],
+        "page_text_char_count": sum(len(text) for text in page_texts),
+        "prompt_version": trace_metadata["prompt_version"],
+    }
+    generation_input: dict[str, Any] = {
+        "document_format": "pdf",
+        "page_count": len(page_texts),
+        "prompt_version": trace_metadata["prompt_version"],
+        "system_prompt": PDF_SYSTEM_PROMPT,
+        "user_prompt": PDF_USER_PROMPT,
+    }
+    if capture_content_enabled():
+        # Trace extracted text and structured results, not the binary PDF payload.
+        trace_input["extracted_page_text"] = text_context[:60000]
+        generation_input["extracted_page_text"] = text_context[:60000]
+
+    with langfuse_observation(
+        as_type="span",
+        name="sustainability-document-pdf-extraction",
+        input=trace_input,
+        metadata=trace_metadata,
+    ) as trace:
+        with langfuse_observation(
+            as_type="generation",
+            name="gemini-structured-pdf-fact-extraction",
+            model=model_name,
+            input=generation_input,
+            metadata={
+                "provider": "google",
+                "prompt_version": trace_metadata["prompt_version"],
+            },
+        ) as generation:
+            try:
+                raw_result = await model.ainvoke(
+                    [
+                        SystemMessage(content=PDF_SYSTEM_PROMPT),
+                        HumanMessage(
+                            content=[
+                                {"type": "text", "text": user_text},
+                                {
+                                    "type": "media",
+                                    "mime_type": "application/pdf",
+                                    "data": content,
+                                },
+                            ]
+                        ),
+                    ]
+                )
+                if isinstance(raw_result, dict) and "parsed" in raw_result:
+                    parsing_error = raw_result.get("parsing_error")
+                    if parsing_error is not None:
+                        raise ValueError("Gemini returned an invalid structured extraction.")
+                    extraction = PdfExtractionResponse.model_validate(
+                        raw_result.get("parsed")
+                    )
+                    raw_message = raw_result.get("raw")
+                else:
+                    extraction = PdfExtractionResponse.model_validate(raw_result)
+                    raw_message = None
+
+                usage_details = _langchain_token_usage(raw_message)
+                generation_output = _pdf_trace_output(extraction)
+                update_kwargs: dict[str, Any] = {"output": generation_output}
+                if usage_details:
+                    update_kwargs["usage_details"] = usage_details
+                update_observation(generation, **update_kwargs)
+                update_observation(
+                    trace,
+                    output={
+                        "document_kind": extraction.document_kind,
+                        "fact_count": len(extraction.facts),
+                        "models": model_name,
+                    },
+                )
+                return extraction
+            except Exception as error:
+                update_observation(
+                    generation,
+                    level="ERROR",
+                    status_message=type(error).__name__,
+                )
+                update_observation(
+                    trace,
+                    level="ERROR",
+                    status_message=type(error).__name__,
+                )
+                raise
+
+
+def _langchain_token_usage(raw_message: Any) -> dict[str, int] | None:
+    if raw_message is None:
+        return None
+    usage = getattr(raw_message, "usage_metadata", None)
+    if not usage:
+        response_metadata = getattr(raw_message, "response_metadata", None) or {}
+        usage = response_metadata.get("token_usage") or {}
+    if not isinstance(usage, dict):
+        return None
+    aliases = {
+        "input": usage.get("input_tokens", usage.get("prompt_tokens")),
+        "output": usage.get("output_tokens", usage.get("completion_tokens")),
+        "total": usage.get("total_tokens"),
+    }
+    result = {key: int(value) for key, value in aliases.items() if value is not None}
+    return result or None
+
+
+def _pdf_trace_output(extraction: PdfExtractionResponse) -> dict[str, Any]:
+    if capture_content_enabled():
+        return extraction.model_dump(mode="json")
+    return {
+        "document_kind": extraction.document_kind,
+        "fact_count": len(extraction.facts),
+        "metric_names": sorted({fact.metric_name for fact in extraction.facts}),
+        "cited_pages": sorted({fact.page_number for fact in extraction.facts}),
+    }
 
 
 def _find_table_header(worksheet) -> tuple[int | None, list[str]]:

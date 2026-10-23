@@ -1,5 +1,6 @@
 import os
 import unittest
+from contextlib import nullcontext
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from io import BytesIO
@@ -20,6 +21,7 @@ from services.fact_extraction import (
     _parse_decimal,
 )
 from services.fact_persistence import persist_extracted_facts
+from services.llm_observability import langfuse_observation
 
 
 class FactExtractionTests(unittest.TestCase):
@@ -166,7 +168,7 @@ class FactExtractionTests(unittest.TestCase):
             def __init__(self, **_kwargs):
                 pass
 
-            def with_structured_output(self, _schema):
+            def with_structured_output(self, _schema, **_kwargs):
                 return FakeStructuredModel()
 
         writer = PdfWriter()
@@ -177,8 +179,13 @@ class FactExtractionTests(unittest.TestCase):
         async def run_extraction():
             return await extract_pdf_facts(pdf_buffer.getvalue())
 
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}), patch(
-            "langchain_google_genai.ChatGoogleGenerativeAI", FakeChatModel
+        with (
+            patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}),
+            patch("langchain_google_genai.ChatGoogleGenerativeAI", FakeChatModel),
+            patch(
+                "services.fact_extraction.langfuse_observation",
+                side_effect=lambda **_kwargs: nullcontext(None),
+            ),
         ):
             import asyncio
 
@@ -280,6 +287,50 @@ class FactExtractionTests(unittest.TestCase):
         self.assertNotIn("\x00", evidence.quote)
         self.assertNotIn("\x00", fact.raw_value)
         self.assertNotIn("\x00", fact.dimensions["meter_id"])
+
+    def test_langfuse_observation_wraps_a_generation_when_configured(self) -> None:
+        class FakeObservation:
+            def __init__(self):
+                self.updates = []
+
+            def update(self, **values):
+                self.updates.append(values)
+
+        class FakeContext:
+            def __init__(self, observation):
+                self.observation = observation
+
+            def __enter__(self):
+                return self.observation
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeClient:
+            def __init__(self):
+                self.attributes = None
+                self.observation = FakeObservation()
+
+            def start_as_current_observation(self, **attributes):
+                self.attributes = attributes
+                return FakeContext(self.observation)
+
+        client = FakeClient()
+        with patch(
+            "services.llm_observability.get_langfuse_client", return_value=client
+        ):
+            with langfuse_observation(
+                as_type="generation",
+                name="test-generation",
+                model="gemini-test",
+            ) as observation:
+                observation.update(output={"fact_count": 1})
+
+        self.assertEqual(client.attributes["name"], "test-generation")
+        self.assertEqual(
+            client.observation.updates,
+            [{"output": {"fact_count": 1}}],
+        )
 
 
 if __name__ == "__main__":

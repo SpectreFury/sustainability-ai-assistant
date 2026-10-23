@@ -65,7 +65,15 @@ async def process_document(extraction_run_id: str) -> None:
             raise ValueError("Document has no Cloudinary public ID.")
 
         content = await download_document(cloudinary_public_id, filename, file_hash)
-        extracted = await extract_document(filename, content)
+        extracted = await extract_document(
+            filename,
+            content,
+            trace_context={
+                "document_id": str(document_id),
+                "extraction_run_id": str(parsed_run_id),
+                "attempt_number": str(attempt_number),
+            },
+        )
         if not extracted.facts:
             raise ValueError("No supported facts were extracted from this document.")
 

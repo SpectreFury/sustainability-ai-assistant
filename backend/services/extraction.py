@@ -77,5 +77,13 @@ async def download_document(
     return b"".join(chunks)
 
 
-async def extract_document(filename: str, content: bytes) -> ExtractedDocument:
-    return await extract_document_facts(filename, content)
+async def extract_document(
+    filename: str,
+    content: bytes,
+    trace_context: dict[str, str] | None = None,
+) -> ExtractedDocument:
+    return await extract_document_facts(
+        filename,
+        content,
+        trace_context=trace_context,
+    )
