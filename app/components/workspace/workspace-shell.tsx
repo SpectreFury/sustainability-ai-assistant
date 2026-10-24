@@ -10,6 +10,7 @@ import {
   LuCalendarDays,
   LuFileCheck2,
   LuFiles,
+  LuFlaskConical,
   LuLogOut,
   LuSparkles,
   LuSprout,
@@ -37,13 +38,15 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("")
-  const activePage = pathname.startsWith("/workspace/documents")
-    ? "documents"
-    : pathname.startsWith("/workspace/upload")
-      ? "upload"
-      : pathname.startsWith("/workspace/financial-year")
-        ? "financial-year"
-        : "ask"
+  const activePage = pathname.startsWith("/workspace/evaluations")
+    ? "evaluations"
+    : pathname.startsWith("/workspace/documents")
+      ? "documents"
+      : pathname.startsWith("/workspace/upload")
+        ? "upload"
+        : pathname.startsWith("/workspace/financial-year")
+          ? "financial-year"
+          : "ask"
 
   return (
     <div className="workspace-app">
@@ -96,6 +99,14 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           >
             <LuCalendarDays aria-hidden="true" />
             <span>Financial-Year Summary</span>
+          </Link>
+          <Link
+            className={`workspace-nav-item ${activePage === "evaluations" ? "is-active" : ""}`}
+            aria-current={activePage === "evaluations" ? "page" : undefined}
+            href="/workspace/evaluations"
+          >
+            <LuFlaskConical aria-hidden="true" />
+            <span>Evaluations</span>
           </Link>
         </nav>
 
