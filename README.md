@@ -1,11 +1,17 @@
 ## Sustainability AI Assistant
 
-This is the KuKi sustainability AI assistant application. Had a lot of fun making this.
+## Tech stack
 
-KuKi turns uploaded sustainability documents into source-linked facts, supports
-evidence-backed questions, and builds Indian financial-year summaries from the
-available records. It keeps document-reported values separate from calculations
-made by the application.
+- Frontend - Next.js, Tailwind, Tanstack Query.
+- Backend - FastAPI, PostgreSQL, SQLAlchemy, Alembic
+- Workers - TaskIQ (Queue), Redis(Broker)
+- Tools - Langfuse
+- LLM APIS - gemini-3.5-flash-lite
+
+## Coding tools used
+
+- Harness - Opencode
+- Models: GPT 6 Luna, Big Pickles, Deepseek V4.1 flash
 
 ## Run locally
 
@@ -46,27 +52,6 @@ requires; local Postgres and Redis are started with Compose.
 
 This is just for the reviewer's ease of use and nothing more.
 
-## Review the main workflows
-
-After startup, open the frontend at [http://localhost:3000](http://localhost:3000)
-and create an account. The dashboard includes:
-
-- **Documents** at `/workspace/documents` to upload PDF or XLSX files, track
-  processing, and review facts with their page or spreadsheet-cell evidence.
-- **Ask AI** at `/workspace` to ask questions over selected documents and
-  inspect citations, calculations, and gaps.
-- **Financial-Year Summary** at `/workspace/financial-year` to select an Indian
-  financial year, organization, and document scope and inspect coverage.
-- **Evaluations** at `/workspace/evaluations` to run the source-backed case pack
-  and inspect saved results.
-
-The API's interactive examples are at [http://localhost:8000/docs](http://localhost:8000/docs).
-The main API routes are `POST /documents/upload-signature` and
-`POST /documents/{id}/complete` for uploads, `GET /documents` for processing
-status, `POST /answers` for questions, `GET /financial-year/summary` for FY
-totals, and `GET /evaluations/cases` plus `POST /evaluations/runs` for evaluation.
-The browser handles the signed Cloudinary upload steps for documents.
-
 ## Evaluation cases and saved results
 
 The current case pack is `kuki-dataset-v4` and contains 14 source-grounded cases
@@ -89,6 +74,14 @@ The snapshot contains these historical runs:
 | --- | ---: | ---: |
 | `kuki-dataset-v1` (initial run) | 2 / 11 | 18.2% |
 | `kuki-dataset-v4` (current case pack) | 10 / 14 | 71.4% |
+
+## Evals Improvement
+
+### V1
+<img width="1906" height="959" alt="image" src="https://github.com/user-attachments/assets/9cd983f5-5762-4e7a-91f5-3b292950c776" />
+
+### V4
+<img width="1906" height="959" alt="image" src="https://github.com/user-attachments/assets/db013082-4891-4a77-a1a8-72dfc3e8edcf" />
 
 ## Approach and design choices
 
@@ -115,18 +108,13 @@ However, even if we hit rate limiting, the system is build in a way that we retr
 ## Images 
 
 <img width="1919" height="957" alt="image" src="https://github.com/user-attachments/assets/e3b79162-297e-40ed-8ffd-76414f2a1315" />
+<img width="1906" height="959" alt="image" src="https://github.com/user-attachments/assets/e7ca37a4-8fb0-4927-a848-23d0d06e7be5" />
 <img width="1919" height="957" alt="image" src="https://github.com/user-attachments/assets/a52c58a6-b94e-4690-adfd-d8e43b42e780" />
 <img width="1919" height="957" alt="image" src="https://github.com/user-attachments/assets/e8392b4c-2813-46af-a403-f97ab0ba96c0" />
 <img width="1919" height="957" alt="image" src="https://github.com/user-attachments/assets/f016345b-044c-41ad-b8c4-f998a4a4aba2" />
 <img width="1920" height="961" alt="image" src="https://github.com/user-attachments/assets/8d1bb2f4-2d8e-4688-a671-03033a1eb1fa" />
 
-## Evals Improvement
 
-### V1
-<img width="1906" height="959" alt="image" src="https://github.com/user-attachments/assets/9cd983f5-5762-4e7a-91f5-3b292950c776" />
-
-### V4
-<img width="1906" height="959" alt="image" src="https://github.com/user-attachments/assets/db013082-4891-4a77-a1a8-72dfc3e8edcf" />
 
 
 
