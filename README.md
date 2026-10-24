@@ -39,10 +39,8 @@ Install Docker with Compose v2, Node.js 20.9 or later (which includes `npm`),
 `uv`, and GNU Make. From the repository folder, run:
 
 ```sh
-make dev
+sudo make dev
 ```
-
-Run this as your normal repository user, without `sudo`.
 
 ## Architecture
 
@@ -104,35 +102,12 @@ The snapshot contains these historical runs:
 - **Observability:** Langfuse tracing is optional and can record extraction and
   answer calls when configured.
 
-This Mermaid diagram uses features the terminal renderer doesn't support.
-flowchart LR
-    User[Reviewer] --> Web[Next.js dashboard]
-    Web -->|API calls + auth cookies| API[FastAPI]
-
-    Web -->|Upload using signed request| Cloudinary[(Cloudinary<br/>original files)]
-    API -->|Sign upload / record completion| DB[(Postgres)]
-    API -->|Read/write scoped records| DB
-    API -->|Queue extraction or evaluation task| Redis[(Redis Streams)]
-    Redis --> Worker[Taskiq worker]
-
-    Worker -->|Download and verify source| Cloudinary
-    Worker -->|Extract facts / evaluate answers| Gemini[Gemini API]
-    Worker -->|Save facts, status, evaluation results| DB
-
-    API -->|Load selected facts and source context| DB
-    API -->|Send prepared context and question| Gemini
-    Gemini -->|Draft structured answer| API
-    API -->|Validate, save, return answer| DB
-    API --> Web
-
-    API -. optional traces .-> Langfuse[Langfuse]
-    Worker -. optional traces .-> Langfuse
+Additionally, I have added user authentication to this project even if it was not required. This is a full JWT based system with email and password login and all the document answers are user specific.
 
 ## Known limitations
 
-I was severely hindered by the model quality, we constant hit rate limit with the gemini API and if given the choice, I would select a much powerful model for extraction.
+I was severely hindered by the model quality, we constant hit rate limit with the gemini API and if given the choice, I would select a much powerful model for extraction. However, even if we hit rate limiting, the system is build in a way that we retry and the processing mostly finishes.
 
-However, even if we hit rate limiting, the system is build in a way that we retry and the processing mostly finishes.
 
 ## Images 
 
