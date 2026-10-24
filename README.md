@@ -96,8 +96,7 @@ The snapshot contains these historical runs:
 - **GenAI:** Gemini extracts structured facts from PDF and XLSX content and
   drafts evidence-grounded answers. The application retrieves relevant facts
   from Postgres and prepares the evidence context; the model does not query the
-  database, and the answer path does not use vector search. Server-side code
-  performs and rechecks arithmetic and financial-year aggregation.
+  database.
 - **Observability:** Langfuse tracing is optional and can record extraction and
   answer calls when configured.
 
