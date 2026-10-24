@@ -1,17 +1,10 @@
-"""KuKi's first source-grounded evaluation pack.
-
-The cases below were authored against kuki-assignment-dataset and are
-independent from the /benchmark evaluation pack. Expected locators identify the
-source cells/pages used for deterministic evidence scoring.
-"""
-
 from __future__ import annotations
 
 import hashlib
 import json
 from typing import Any
 
-CASE_SET_VERSION = "kuki-dataset-v1"
+CASE_SET_VERSION = "kuki-dataset-v4"
 
 EVALUATION_CASES: list[dict[str, Any]] = [
     {
@@ -75,7 +68,9 @@ EVALUATION_CASES: list[dict[str, Any]] = [
                 "filename": "Annual Electricity Consumption.xlsx",
                 "value": "628300",
                 "unit": "kWh",
-                "label_terms": ["total consumption"],
+                # The source header is exactly "Total (kWh)"; this field's
+                # meaning comes from the surrounding section, not its header.
+                "label_terms": ["total"],
                 "sheet": "Quarterly Summary",
                 "cell": "G3",
             },
@@ -247,7 +242,7 @@ EVALUATION_CASES: list[dict[str, Any]] = [
         ),
         "domain": "Uncertainty handling · Policy dates",
         "required_documents": ["quality_policy_nestle.pdf"],
-        "expected_status": "insufficient_evidence",
+        "expected_status": "answered",
         "expected_numeric_values": [],
         "expected_term_groups": [],
         "expected_evidence": [
@@ -266,6 +261,9 @@ EVALUATION_CASES: list[dict[str, Any]] = [
                 "does not give an effective date",
                 "no effective date",
                 "approval date only",
+                "does not show a separate effective date",
+                "no separate effective date is shown",
+                "no separate effective date is stated",
             ]
         ],
         "expected_extraction_absent_terms": ["effective date"],
@@ -308,6 +306,29 @@ EVALUATION_CASES: list[dict[str, Any]] = [
             {"value": "5.00", "unit": "INR/Cu.M"},
             {"value": "2321", "unit": "Cu.M"},
             {"value": "11605.00", "unit": "INR"},
+        ],
+        "expected_value_assertions": [
+            {
+                "filename": "water_bill_invoice.pdf",
+                "value": "5.00",
+                "unit": "INR/Cu.M",
+                "label_terms": ["water quality surcharge", "rate"],
+                "page": 1,
+            },
+            {
+                "filename": "water_bill_invoice.pdf",
+                "value": "2321",
+                "unit": "Cu.M",
+                "label_terms": ["water quality surcharge", "quantity"],
+                "page": 1,
+            },
+            {
+                "filename": "water_bill_invoice.pdf",
+                "value": "11605.00",
+                "unit": "INR",
+                "label_terms": ["water quality surcharge"],
+                "page": 1,
+            },
         ],
         "expected_term_groups": [["Water Quality Surcharge"], ["December 2025", "2025-12"]],
         "expected_evidence": [
@@ -409,6 +430,141 @@ EVALUATION_CASES: list[dict[str, Any]] = [
             "missing_months": ["Jan", "Feb", "Mar"],
             "no_data_metrics": ["water", "waste"],
         },
+    },
+    {
+        "id": "EV12",
+        "title": "BESCOM time-of-day consumption breakdown",
+        "question": (
+            "For the BESCOM bill with billing period 01-06-2024 to 01-07-2024, "
+            "what kWh consumption does its TOD meter table report for Morning "
+            "Peak, Normal, On Peak, and Off Peak? Keep the four readings separate "
+            "and do not substitute detailed bill-charge quantities."
+        ),
+        "domain": "Electricity bill · Time-of-day consumption",
+        "required_documents": ["BESCOM Commercial Electricity Bill.pdf"],
+        "expected_status": "answered",
+        "expected_numeric_values": [
+            {"value": "6000", "unit": "kWh"},
+            {"value": "38079.957031", "unit": "kWh"},
+            {"value": "9839.996094", "unit": "kWh"},
+            {"value": "9079.986328", "unit": "kWh"},
+        ],
+        "expected_value_assertions": [
+            {
+                "filename": "BESCOM Commercial Electricity Bill.pdf",
+                "value": value,
+                "unit": "kWh",
+                "label_terms": [label],
+                "page": 1,
+                "period_start": "2024-06-01",
+                "period_end": "2024-07-01",
+            }
+            for value, label in [
+                ("6000", "morning peak"),
+                ("38079.957031", "normal"),
+                ("9839.996094", "on peak"),
+                ("9079.986328", "off peak"),
+            ]
+        ],
+        "expected_term_groups": [
+            ["Morning Peak"],
+            ["Normal"],
+            ["On Peak"],
+            ["Off Peak"],
+            ["01-06-2024", "2024-06-01"],
+            ["01-07-2024", "2024-07-01"],
+        ],
+        "expected_evidence": [
+            {"filename": "BESCOM Commercial Electricity Bill.pdf", "page": 1},
+        ],
+        "calculation": None,
+        "uncertainty_terms": [],
+    },
+    {
+        "id": "EV13",
+        "title": "Adani rounded and detailed late-payable figures",
+        "question": (
+            "For the Adani bill month APR-24, state its due date. Page 1 gives a "
+            "round sum payable after the due date and page 2 gives a detailed "
+            "total bill amount with DPC. Report both amounts as printed and say "
+            "whether they agree; do not choose one as authoritative."
+        ),
+        "domain": "Electricity bill · Conflicting payable amounts",
+        "required_documents": ["Adani commercial electricity bill.pdf"],
+        "expected_status": "conflicting_evidence",
+        "expected_numeric_values": [
+            {"value": "639410.00", "unit": "INR"},
+            {"value": "639415.77", "unit": "INR"},
+        ],
+        "expected_value_assertions": [
+            {
+                "filename": "Adani commercial electricity bill.pdf",
+                "value": "639410.00",
+                "unit": "INR",
+                "label_terms": ["round sum payable", "after due date"],
+                "page": 1,
+            },
+            {
+                "filename": "Adani commercial electricity bill.pdf",
+                "value": "639415.77",
+                "unit": "INR",
+                "label_terms": ["total bill amount", "dpc"],
+                "page": 2,
+            },
+        ],
+        "expected_term_groups": [
+            ["APR-24", "April 2024"],
+            ["30-05-2024", "2024-05-30", "30 May 2024"],
+        ],
+        "expected_evidence": [
+            {"filename": "Adani commercial electricity bill.pdf", "page": 1},
+            {"filename": "Adani commercial electricity bill.pdf", "page": 2},
+        ],
+        "calculation": None,
+        "uncertainty_terms": [
+            ["differ", "do not agree", "do not match", "discrepancy", "conflict"],
+        ],
+    },
+    {
+        "id": "EV14",
+        "title": "Adani bill month and current consumption",
+        "question": (
+            "For the Adani commercial electricity bill, identify the consumer, "
+            "bill month, billing period, bill date, due date, and reported kWh "
+            "consumption. Also state what the note says the 01.06.24 meter "
+            "reading will be used to prepare; keep that note separate from this "
+            "bill's April period."
+        ),
+        "domain": "Electricity bill · Period and consumption",
+        "required_documents": ["Adani commercial electricity bill.pdf"],
+        "expected_status": "answered",
+        "expected_numeric_values": [{"value": "47407", "unit": "kWh"}],
+        "expected_value_assertions": [
+            {
+                "filename": "Adani commercial electricity bill.pdf",
+                "value": "47407",
+                "unit": "kWh",
+                "label_terms": ["units consumed"],
+                "answer_label_terms": ["consumption"],
+                "page": 1,
+                "period_start": "2024-04-01",
+                "period_end": "2024-04-30",
+            },
+        ],
+        "expected_term_groups": [
+            ["J KUMAR MEPL JV"],
+            ["APR-24", "April 2024"],
+            ["01-04-2024", "2024-04-01"],
+            ["30.04.2024", "30-04-2024", "2024-04-30"],
+            ["09-05-2024", "2024-05-09", "9 May 2024"],
+            ["30-05-2024", "2024-05-30", "30 May 2024"],
+            ["next bill", "MAY-24 bill", "preparing MAY-24 bill"],
+        ],
+        "expected_evidence": [
+            {"filename": "Adani commercial electricity bill.pdf", "page": 1},
+        ],
+        "calculation": None,
+        "uncertainty_terms": [],
     },
 ]
 

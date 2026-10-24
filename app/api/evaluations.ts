@@ -121,6 +121,7 @@ export type EvaluationCaseResult = {
   failure_stage?: string | null
   failure_type?: string | null
   failure_attempts?: number | null
+  failure_diagnostic?: string | null
   retryable?: boolean | null
   answer_attempts?: number | null
   document_snapshot: Record<string, { document_id: string | null; file_hash: string | null; status_at_start: string | null; extraction_model?: string | null; extraction_pipeline?: string | null; extraction_prompt_hash?: string | null; extraction_attempts?: number | null; financial_year_extraction_run_id?: string | null }>

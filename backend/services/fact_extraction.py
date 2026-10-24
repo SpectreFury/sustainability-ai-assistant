@@ -19,7 +19,7 @@ from schemas.extraction import (
     Segment,
 )
 from services.errors import TemporaryExtractionError
-from services.source_verification import verify_fact_source
+from services.source_verification import expand_cell_range, verify_fact_source
 from services.llm_observability import (
     capture_content_enabled,
     langfuse_observation,
@@ -30,7 +30,7 @@ from services.parsing import ParsedDocument, parse_document
 from services.pipeline import Pipeline, get_pipeline
 from services.text_sanitization import sanitize_text
 
-_PROMPT_VERSION = "kuki-facts-v2"
+_PROMPT_VERSION = "kuki-facts-v4"
 _DEFAULT_MODEL = "gemini-3.5-flash-lite"
 _MAX_OUTPUT_TOKENS = 32_000
 _MAX_SPREADSHEET_CELLS_PER_CHUNK = 24
@@ -40,6 +40,16 @@ _CELL_REFERENCE = re.compile(r"^([A-Z]{1,3})(\d+)$")
 _YEAR_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
 _YEAR_MONTH_PATTERN = re.compile(r"^\s*((?:19|20)\d{2})[-/](0?[1-9]|1[0-2])\s*$")
 _QUARTER_PATTERN = re.compile(r"\bq([1-4])\b", re.IGNORECASE)
+_BILL_MONTH_PATTERN = re.compile(
+    r"\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)[-/](?:19|20)?\d{2}\b",
+    re.IGNORECASE,
+)
+_SOURCE_NUMBER_PATTERN = re.compile(r"(?<![A-Za-z])[-+]?\d[\d,]*(?:\.\d+)?")
+_TOD_ROW_PATTERN = re.compile(
+    r"^\s*(?:(?:\d{1,2}:\d{2}\s*Hrs?\s*to\s*\d{1,2}(?::\d{2})?\s*Hrs?)\s+)?"
+    r"(?P<zone>Morning\s+Peak|Normal|On\s+Peak|Off\s+Peak)\b(?P<values>.*)$",
+    re.IGNORECASE,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -96,6 +106,20 @@ async def extract_document_facts(
             )
         )
 
+    if parsed.kind == "pdf":
+        facts = _add_pdf_organisation_fact(
+            output.organisation,
+            parsed,
+            pipeline,
+            facts,
+        )
+        facts = _add_pdf_bill_metadata_facts(parsed, pipeline, facts, output.doc_type)
+        facts = _add_pdf_tod_consumption_facts(parsed, pipeline, facts)
+
+    if parsed.kind == "xlsx":
+        facts = _add_explicit_spreadsheet_dash_facts(parsed, pipeline, facts)
+    if output.doc_type == "waste_record":
+        facts = _associate_record_quantity_labels(facts)
     facts = split_monthly_column_facts(facts, parsed.segments)
     if parsed.kind == "xlsx":
         facts = _restore_explicit_spreadsheet_periods(facts, parsed.segments, issues)
@@ -118,9 +142,420 @@ async def extract_document_facts(
         facts=facts,
         issues=issues,
         segments=parsed.segments,
-        model=os.getenv("GEMINI_MODEL", _DEFAULT_MODEL),
+        model=os.getenv("DOCUMENT_EXTRACTION_MODEL", _DEFAULT_MODEL),
         pipeline=pipeline.name,
     )
+
+
+def _source_quote_for_phrase(segment: Segment, phrase: str) -> str | None:
+    parts = [re.escape(part) for part in phrase.split() if part]
+    if not parts:
+        return None
+    match = re.search(r"\s+".join(parts), segment.text, re.IGNORECASE)
+    return match.group(0) if match else None
+
+
+def _add_pdf_organisation_fact(
+    organisation: str | None,
+    parsed: ParsedDocument,
+    pipeline: Pipeline,
+    facts: list[Fact],
+) -> list[Fact]:
+    """Give an extracted PDF organization name a source-backed fact when quoted."""
+    value = sanitize_text(organisation)
+    if not value or any(fact.key == "document_organisation" for fact in facts):
+        return facts
+    for segment in parsed.segments:
+        if segment.locator.page is None:
+            continue
+        quote = _source_quote_for_phrase(segment, value)
+        if not quote:
+            continue
+        verified, reason = _verify_source(
+            parsed,
+            pipeline,
+            segment.locator,
+            quote,
+            None,
+        )
+        if verified:
+            return facts + [
+                Fact(
+                    key="document_organisation",
+                    label="Customer / organisation",
+                    category="party",
+                    value_text=value,
+                    locator=segment.locator,
+                    quote=quote,
+                    verified=True,
+                    verification=reason,
+                )
+            ]
+    return facts
+
+
+def _bill_period_from_facts(facts: list[Fact]) -> tuple[str | None, str | None]:
+    return next(
+        (
+            (fact.period_start, fact.period_end)
+            for fact in facts
+            if fact.category == "consumption" and fact.period_start and fact.period_end
+        ),
+        (None, None),
+    )
+
+
+def _add_pdf_bill_metadata_facts(
+    parsed: ParsedDocument,
+    pipeline: Pipeline,
+    facts: list[Fact],
+    doc_type: str,
+) -> list[Fact]:
+    """Recover a few explicitly labelled bill fields when a model omits them."""
+    if doc_type not in {"electricity_bill", "water_bill"}:
+        return facts
+
+    period_start, period_end = _bill_period_from_facts(facts)
+    additions: list[Fact] = []
+    has_bill_month = any(fact.key == "bill_month" for fact in facts)
+    has_dpc_total = any(
+        "total bill amount with dpc" in fact.label.casefold() for fact in facts
+    )
+    has_meter_note = any(fact.key == "future_bill_meter_reading_note" for fact in facts)
+
+    for segment in parsed.segments:
+        if segment.locator.page is None:
+            continue
+        text = segment.text
+
+        if not has_bill_month:
+            heading = re.search(r"\bbill\s+month\b", text, re.IGNORECASE)
+            if heading:
+                search_end = min(len(text), heading.end() + 500)
+                month = _BILL_MONTH_PATTERN.search(text, heading.end(), search_end)
+                if month:
+                    quote = text[heading.start() : month.end()].strip()
+                    verified, reason = _verify_source(
+                        parsed,
+                        pipeline,
+                        segment.locator,
+                        quote,
+                        None,
+                    )
+                    if verified:
+                        additions.append(
+                            Fact(
+                                key="bill_month",
+                                label="Bill Month",
+                                category="period",
+                                value_text=month.group(0),
+                                period_start=period_start,
+                                period_end=period_end,
+                                locator=segment.locator,
+                                quote=quote,
+                                verified=True,
+                                verification=reason,
+                            )
+                        )
+                        has_bill_month = True
+
+        if not has_dpc_total:
+            label = re.search(
+                r"\btotal\s+bill\s+amount\s+with\s+DPC\b",
+                text,
+                re.IGNORECASE,
+            )
+            if label:
+                tail_end = min(len(text), label.end() + 160)
+                amount = _SOURCE_NUMBER_PATTERN.search(text, label.end(), tail_end)
+                if amount:
+                    quote = text[label.start() : amount.end()].strip()
+                    numeric_value = _decimal_value_from_text(amount.group(0))
+                    if numeric_value is not None:
+                        verified, reason = _verify_source(
+                            parsed,
+                            pipeline,
+                            segment.locator,
+                            quote,
+                            numeric_value,
+                        )
+                        if verified:
+                            additions.append(
+                                Fact(
+                                    key="total_bill_amount_with_dpc",
+                                    label="Total bill amount with DPC",
+                                    category="amount",
+                                    metric="cost",
+                                    value_text=amount.group(0),
+                                    value_number=numeric_value,
+                                    unit="INR",
+                                    period_start=period_start,
+                                    period_end=period_end,
+                                    note="unit not printed; assumed",
+                                    locator=segment.locator,
+                                    quote=quote,
+                                    verified=True,
+                                    verification=reason,
+                                )
+                            )
+                            has_dpc_total = True
+
+        if not has_meter_note:
+            note = re.search(
+                r"\bmeter\s+reading\s+as\s+on\b.{0,240}?\bwill\s+be\s+downloaded\b"
+                r".{0,160}?\bpreparing\s+(?:the\s+)?[A-Z]{3,4}[-/]\d{2,4}\s+bill\b",
+                text,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if note:
+                quote = note.group(0).strip()
+                verified, reason = _verify_source(
+                    parsed,
+                    pipeline,
+                    segment.locator,
+                    quote,
+                    None,
+                )
+                if verified:
+                    additions.append(
+                        Fact(
+                            key="future_bill_meter_reading_note",
+                            label="Meter reading preparation note",
+                            category="other",
+                            value_text=quote,
+                            locator=segment.locator,
+                            quote=quote,
+                            verified=True,
+                            verification=reason,
+                        )
+                    )
+                    has_meter_note = True
+
+    return facts + additions
+
+
+def _add_pdf_tod_consumption_facts(
+    parsed: ParsedDocument,
+    pipeline: Pipeline,
+    facts: list[Fact],
+) -> list[Fact]:
+    """Recover consumption-column values from explicitly headed TOD bill tables."""
+    period_start, period_end = _bill_period_from_facts(facts)
+    additions: list[Fact] = []
+    for segment in parsed.segments:
+        if segment.locator.page is None:
+            continue
+        heading = re.search(r"\bTOD\s+meter\s+readings\b", segment.text, re.IGNORECASE)
+        if not heading:
+            continue
+        for line in segment.text[heading.end() :].splitlines():
+            if re.search(r"\bYour\s+Detailed\s+Bill\b", line, re.IGNORECASE):
+                break
+            match = _TOD_ROW_PATTERN.match(line)
+            if not match:
+                continue
+            values = _SOURCE_NUMBER_PATTERN.findall(match.group("values"))
+            if len(values) < 3:
+                continue
+            raw_value = values[2]
+            numeric_value = _decimal_value_from_text(raw_value)
+            if numeric_value is None:
+                continue
+            zone = " ".join(match.group("zone").split())
+            label = f"{zone} consumption"
+            already_present = any(
+                fact.locator.page == segment.locator.page
+                and _decimal_value_from_text(fact.value_text.split()[0]) == numeric_value
+                and zone.casefold() in fact.label.casefold()
+                and fact.unit
+                and fact.unit.casefold() == "kwh"
+                for fact in facts + additions
+                if fact.value_text.split()
+            )
+            if already_present:
+                continue
+
+            quote = line.strip()
+            verified, reason = _verify_source(
+                parsed,
+                pipeline,
+                segment.locator,
+                quote,
+                numeric_value,
+            )
+            if not verified:
+                continue
+            additions.append(
+                Fact(
+                    key=f"tod_consumption_{_slug(zone)}",
+                    label=label,
+                    category="consumption",
+                    metric="electricity",
+                    series="Time-of-day consumption",
+                    value_text=raw_value,
+                    value_number=numeric_value,
+                    unit="kWh",
+                    period_start=period_start,
+                    period_end=period_end,
+                    note="unit not printed; assumed",
+                    locator=segment.locator,
+                    quote=quote,
+                    verified=True,
+                    verification=reason,
+                )
+            )
+    return facts + additions
+
+
+def _add_explicit_spreadsheet_dash_facts(
+    parsed: ParsedDocument,
+    pipeline: Pipeline,
+    facts: list[Fact],
+) -> list[Fact]:
+    """Keep meaningful printed dashes as exact, non-numeric workbook facts."""
+    cells_by_sheet: dict[str, dict[str, float | str]] = {}
+    for segment in parsed.segments:
+        sheet = segment.locator.sheet
+        if sheet:
+            cells_by_sheet.setdefault(sheet, {}).update(segment.cells or {})
+
+    existing_markers = {
+        (fact.locator.sheet, cell, fact.value_text.strip())
+        for fact in facts
+        if fact.locator.sheet and fact.value_text.strip() in {"-", "–", "—"}
+        for cell in expand_cell_range(fact.locator.cell_range or "")
+    }
+    additions: list[Fact] = []
+    for sheet, sheet_cells in cells_by_sheet.items():
+        for cell, raw_value in sheet_cells.items():
+            if not isinstance(raw_value, str) or raw_value.strip() not in {"-", "–", "—"}:
+                continue
+            cell_match = _CELL_REFERENCE.fullmatch(cell.upper())
+            if cell_match is None:
+                continue
+            column, row_text = cell_match.groups()
+            row_number = int(row_text)
+            row_label = _left_row_label(sheet_cells, column, row_number)
+            column_header = _column_header(sheet_cells, column, row_number)
+            context = " ".join(part for part in (row_label, column_header) if part)
+            normalized_context = context.casefold()
+            if not row_label or not column_header or not re.search(
+                r"co2|carbon|emission|consumption|generation|quantity|amount|total|rate|value|energy|water|waste",
+                normalized_context,
+            ):
+                continue
+            marker = raw_value.strip()
+            if (sheet, cell.upper(), marker) in existing_markers:
+                continue
+
+            unit_match = re.search(r"\(([^()]{1,40})\)", column_header)
+            unit = sanitize_text(unit_match.group(1)) if unit_match else None
+            metric = (
+                "emissions"
+                if re.search(r"co2|carbon|emission", normalized_context)
+                else "other"
+            )
+            locator = Locator(sheet=sheet, cell_range=cell.upper())
+            quote = f"{cell.upper()}={raw_value}"
+            verified, reason = _verify_source(parsed, pipeline, locator, quote, None)
+            if not verified:
+                continue
+            additions.append(
+                Fact(
+                    key=f"printed_marker_{_slug(sheet)}_{cell.casefold()}",
+                    label=f"{row_label} — {column_header}",
+                    category="quantity",
+                    metric=metric,
+                    value_text=raw_value,
+                    unit=unit,
+                    note="The source cell contains a dash marker; no numeric value is reported.",
+                    origin="reported",
+                    locator=locator,
+                    quote=quote,
+                    verified=verified,
+                    verification=reason,
+                )
+            )
+    return facts + additions
+
+
+def _left_row_label(
+    cells: dict[str, float | str], column: str, row_number: int
+) -> str | None:
+    column_number = _column_number(column)
+    for candidate_column in range(column_number - 1, 0, -1):
+        value = cells.get(f"{_column_letter(candidate_column)}{row_number}")
+        if not isinstance(value, str) or not value.strip():
+            continue
+        if value.strip() in {"-", "–", "—"} or _decimal_value_from_text(value) is not None:
+            continue
+        return sanitize_text(value)
+    return None
+
+
+def _column_header(
+    cells: dict[str, float | str], column: str, row_number: int
+) -> str | None:
+    for candidate_row in range(row_number - 1, 0, -1):
+        value = cells.get(f"{column}{candidate_row}")
+        if isinstance(value, str) and value.strip():
+            return sanitize_text(value)
+    return None
+
+
+def _decimal_value_from_text(value: str) -> Decimal | None:
+    try:
+        parsed = Decimal(value.replace(",", "").strip())
+    except InvalidOperation:
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _column_letter(column_number: int) -> str:
+    letters = ""
+    while column_number:
+        column_number, remainder = divmod(column_number - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def _slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+    return slug or "sheet"
+
+
+def _associate_record_quantity_labels(facts: list[Fact]) -> list[Fact]:
+    """Retain a record description on a quantity when its own quote confirms it."""
+    by_key = {fact.key: fact for fact in facts}
+    for fact in facts:
+        entry_match = re.fullmatch(r"waste_entry_(\d+)_quantity", fact.key)
+        if entry_match is None:
+            continue
+        description_fact = by_key.get(f"waste_entry_{entry_match.group(1)}_type")
+        if (
+            description_fact is None
+            or not fact.locator.page
+            or fact.locator.page != description_fact.locator.page
+            or not description_fact.value_text.strip()
+            or not fact.quote
+        ):
+            continue
+        description = re.sub(
+            r"^\s*\d+(?:\.\d+)?\s*[–—-]\s*",
+            "",
+            description_fact.value_text,
+        ).strip()
+        if not description or not re.search(
+            rf"(?<!\w){re.escape(description)}(?!\w)",
+            fact.quote,
+            re.IGNORECASE,
+        ):
+            continue
+        if not re.search(rf"(?<!\w){re.escape(description)}(?!\w)", fact.label, re.IGNORECASE):
+            fact.label = f"{description} — {fact.label}"
+        if not fact.series:
+            fact.series = f"Waste entry {entry_match.group(1)} — {description}"
+    return facts
 
 
 def _verify_source(
@@ -700,7 +1135,7 @@ async def _invoke_model_once(
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_google_genai import ChatGoogleGenerativeAI
 
-    model_name = os.getenv("GEMINI_MODEL", _DEFAULT_MODEL)
+    model_name = os.getenv("DOCUMENT_EXTRACTION_MODEL", _DEFAULT_MODEL)
     page_text = "\n\n".join(segment.text for segment in parsed.segments)
     trace_metadata = {
         **(trace_context or {}),

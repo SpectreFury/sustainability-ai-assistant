@@ -40,6 +40,7 @@ _ANSWER_CONTEXT_CHAR_BUDGET = 220_000
 _SOURCE_PREVIEW_MAX_CHARS = 1800
 _WORD = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _CITATION = re.compile(r"\[(E[1-9][0-9]{0,2})\]")
+_CALCULATION_CITATION = re.compile(r"\[(C[1-9][0-9]{0,2})\]")
 _CELL_REF = re.compile(r"^([A-Z]{1,3})(\d+)$", re.IGNORECASE)
 
 
@@ -60,11 +61,13 @@ class AnswerGenerationError(RuntimeError):
         retryable: bool = False,
         cause_type: str | None = None,
         status_code: int | None = None,
+        diagnostic: str | None = None,
     ):
         super().__init__(message)
         self.retryable = retryable
         self.cause_type = cause_type
         self.status_code = status_code
+        self.diagnostic = diagnostic
 
 
 class AnswerModelNotConfigured(AnswerGenerationError):
@@ -131,6 +134,65 @@ def _answer_error_details(error: Exception) -> tuple[bool, str, int | None]:
         for name in retry_markers
     )
     return retryable_status or retryable_name, error_types[-1], status_code
+
+
+def _safe_answer_error_diagnostic(error: BaseException) -> str:
+    """Return schema-path diagnostics without including provider/model payloads."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    paths: list[str] = []
+    finish_reason: str | None = None
+    error_types: list[str] = []
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        error_types.append(type(current).__name__)
+        raw_finish_reason = getattr(current, "finish_reason", None)
+        if isinstance(raw_finish_reason, str) and re.fullmatch(
+            r"[A-Z0-9_]{1,40}", raw_finish_reason
+        ):
+            finish_reason = raw_finish_reason
+        errors_method = getattr(current, "errors", None)
+        if callable(errors_method):
+            try:
+                details = errors_method(
+                    include_input=False,
+                    include_context=False,
+                    include_url=False,
+                )
+            except TypeError:
+                try:
+                    details = errors_method()
+                except Exception:
+                    details = []
+            except Exception:
+                details = []
+            if isinstance(details, list):
+                for detail in details[:12]:
+                    if not isinstance(detail, dict):
+                        continue
+                    location = detail.get("loc")
+                    error_type = detail.get("type")
+                    if isinstance(location, (tuple, list)):
+                        path = ".".join(
+                            re.sub(r"[^A-Za-z0-9_-]", "", str(part))
+                            for part in location
+                        )
+                    else:
+                        path = "structured_output"
+                    kind = (
+                        re.sub(r"[^A-Za-z0-9_-]", "", error_type)
+                        if isinstance(error_type, str)
+                        else "invalid"
+                    )
+                    paths.append(f"{path or 'structured_output'}:{kind or 'invalid'}")
+        current = current.__cause__ or current.__context__
+    if paths:
+        detail = ", ".join(dict.fromkeys(paths))
+    else:
+        detail = "cause_chain=" + ">".join(error_types[:5])
+    if finish_reason:
+        detail += f"; finish_reason={finish_reason}"
+    return detail[:1000]
 
 
 @dataclass
@@ -235,7 +297,7 @@ async def list_user_answers(
 
 
 def answer_model_name() -> str:
-    return os.getenv("ANSWER_MODEL", "").strip() or _DEFAULT_ANSWER_MODEL
+    return os.getenv("ANSWER_GENERATION_MODEL", "").strip() or _DEFAULT_ANSWER_MODEL
 
 
 def gemini_answer_schema() -> dict:
@@ -296,6 +358,14 @@ def gemini_answer_schema() -> dict:
         },
         ["id", "document_id", "page", "sheet", "cell_range", "quote"],
     )
+    claim = object_schema(
+        {
+            "text": string,
+            "evidence_ids": string_list,
+            "calculation_ids": string_list,
+        },
+        ["text", "evidence_ids", "calculation_ids"],
+    )
     return object_schema(
         {
             "status": {
@@ -307,13 +377,13 @@ def gemini_answer_schema() -> dict:
                     "conflicting_evidence",
                 ],
             },
-            "answer": string,
+            "claims": {"type": "array", "items": claim},
             "key_values": {"type": "array", "items": key_value},
             "calculations": {"type": "array", "items": calculation},
             "evidence": {"type": "array", "items": evidence},
             "gaps": string_list,
         },
-        ["status", "answer", "key_values", "calculations", "evidence", "gaps"],
+        ["status", "claims", "key_values", "calculations", "evidence", "gaps"],
     )
 
 
@@ -355,13 +425,44 @@ def _answer_draft_from_gemini(value: object) -> AnswerDraft:
 
     evidence_count = len(payload.get("evidence") or [])
     calculation_count = len(payload.get("calculations") or [])
-    payload["answer"] = re.sub(
+    legacy_answer = re.sub(
         r"\[([^\]\s]+)\]",
         lambda match: "["
         + normalize_reference(match[1], evidence_aliases, "E", evidence_count)
         + "]",
         str(payload.get("answer", "")),
     )
+
+    claims: list[dict[str, object]] = []
+    rendered_claims: list[str] = []
+    for raw_claim in payload.get("claims") or []:
+        item = dict(raw_claim)
+        evidence_ids = list(
+            dict.fromkeys(
+                normalize_reference(reference, evidence_aliases, "E", evidence_count)
+                for reference in item.get("evidence_ids", [])
+            )
+        )
+        calculation_ids = list(
+            dict.fromkeys(
+                normalize_reference(reference, calculation_aliases, "C", calculation_count)
+                for reference in item.get("calculation_ids", [])
+            )
+        )
+        # Citation tokens are added from the structured ID lists below, never
+        # trusted from free-form model prose.
+        text = re.sub(r"\[(?:E|C)\d+\]", "", str(item.get("text", ""))).strip()
+        references = [*evidence_ids, *calculation_ids]
+        rendered_claims.append(
+            f"{text} {' '.join(f'[{reference}]' for reference in references)}".strip()
+        )
+        claims.append(
+            {
+                "text": text,
+                "evidence_ids": evidence_ids,
+                "calculation_ids": calculation_ids,
+            }
+        )
 
     key_values = []
     for raw_item in payload.get("key_values") or []:
@@ -399,6 +500,8 @@ def _answer_draft_from_gemini(value: object) -> AnswerDraft:
     payload["key_values"] = key_values
     payload["calculations"] = calculations
     payload["evidence"] = evidence
+    payload["claims"] = claims
+    payload["answer"] = " ".join(rendered_claims) if rendered_claims else legacy_answer
     return AnswerDraft.model_validate(payload)
 
 
@@ -701,7 +804,24 @@ async def generate_answer(
         )
         if isinstance(result, dict) and "parsed" in result:
             if result.get("parsing_error") is not None:
-                raise ValueError("Gemini returned invalid structured answer output")
+                validation_error = ValueError(
+                    "Gemini returned invalid structured answer output"
+                )
+                raw_response = result.get("raw")
+                response_metadata = getattr(raw_response, "response_metadata", {})
+                finish_reason = (
+                    response_metadata.get("finish_reason")
+                    if isinstance(response_metadata, dict)
+                    else None
+                )
+                if isinstance(finish_reason, str) and re.fullmatch(
+                    r"[A-Z0-9_]{1,40}", finish_reason
+                ):
+                    validation_error.finish_reason = finish_reason
+                parsing_error = result["parsing_error"]
+                if isinstance(parsing_error, BaseException):
+                    raise validation_error from parsing_error
+                raise validation_error
             draft = _answer_draft_from_gemini(result.get("parsed"))
         else:
             draft = _answer_draft_from_gemini(result)
@@ -710,18 +830,21 @@ async def generate_answer(
         raise
     except Exception as error:
         retryable, cause_type, status_code = _answer_error_details(error)
+        diagnostic = _safe_answer_error_diagnostic(error)
         logger.warning(
-            "Answer generation failed | error_type=%s cause_type=%s status_code=%s retryable=%s",
+            "Answer generation failed | error_type=%s cause_type=%s status_code=%s retryable=%s diagnostic=%s",
             type(error).__name__,
             cause_type,
             status_code,
             retryable,
+            diagnostic,
         )
         raise AnswerGenerationError(
             "The answer could not be generated. Please try again.",
             retryable=retryable,
             cause_type=cause_type,
             status_code=status_code,
+            diagnostic=diagnostic,
         ) from error
 
 
@@ -776,12 +899,23 @@ def _validate_draft(
 
     known_ids = set(evidence_by_id)
     referenced_ids = set(_CITATION.findall(draft.answer))
-    missing_support = missing_support or (
-        not bool(_CITATION.search(draft.answer))
+    known_calculation_ids = {calculation.id for calculation in draft.calculations}
+    referenced_calculation_ids = set(_CALCULATION_CITATION.findall(draft.answer))
+    for claim in draft.claims:
+        referenced_ids.update(claim.evidence_ids)
+        referenced_calculation_ids.update(claim.calculation_ids)
+        if not claim.evidence_ids and not claim.calculation_ids:
+            missing_support = True
+    if (
+        not referenced_ids
+        and not referenced_calculation_ids
         and draft.status != "insufficient_evidence"
-    )
+    ):
+        missing_support = True
     if missing_support:
-        gaps.append("The answer narrative did not include an inline source citation.")
+        gaps.append(
+            "One or more answer claims did not include a linked source or calculation."
+        )
     for key_value in draft.key_values:
         referenced_ids.update(key_value.evidence_ids)
         if not key_value.evidence_ids:
@@ -801,10 +935,17 @@ def _validate_draft(
             gaps.append(f"Calculation {calculation.id} has no linked source evidence.")
 
     unknown_ids = referenced_ids - known_ids
+    unknown_calculation_ids = referenced_calculation_ids - known_calculation_ids
     if unknown_ids:
         gaps.append(
             "Some answer references had no matching source: "
             + ", ".join(sorted(unknown_ids))
+            + "."
+        )
+    if unknown_calculation_ids:
+        gaps.append(
+            "Some answer references had no matching calculation: "
+            + ", ".join(sorted(unknown_calculation_ids))
             + "."
         )
     unverified_used = sorted(
@@ -894,6 +1035,7 @@ def _validate_draft(
     if status == "answered" and (
         missing_support
         or unknown_ids
+        or unknown_calculation_ids
         or unverified_used
         or unverified_evidence
         or has_unverified_calculation

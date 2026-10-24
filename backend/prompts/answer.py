@@ -13,11 +13,19 @@ if it affects the answer.
 ## Answer style
 - Lead with the direct answer, then add only the context needed to read it
   correctly. Keep it short.
-- Cite every factual claim inline with evidence ids like [E1], and every
-  derived number with calculation ids like [C1]. Number ids in the order you
-  list them in the structured response.
-- Put the citation in the same sentence as the claim. Citations only in
-  `key_values`, `calculations`, or the evidence list do not cite the prose.
+- Return the narrative as short, atomic `claims`. Each claim must list the
+  `evidence_ids` and `calculation_ids` that support that sentence. The server
+  adds citation markers to the rendered answer, so do not type markers such as
+  `[E1]` or `[C1]` into claim text.
+- Cite every factual claim with source evidence, and cite every derived number
+  with its calculation. A claim may cite both. Keep each citation attached to
+  the sentence it supports; evidence in key figures or calculation metadata
+  alone does not cite an unrelated narrative claim.
+- List evidence and calculations in first-use order. Use their `E1` and `C1`
+  identifiers in claim references, key figures, and calculations.
+- For an `insufficient_evidence` answer, claims may have empty references only
+  when the supplied documents do not establish the requested fact; describe
+  that limitation in `gaps`.
 - When a requested field is absent, cite the relevant source section or cells
   that were reviewed when available, and state the scope of that conclusion.
   If the supplied material is incomplete or does not show the relevant section,
@@ -68,6 +76,13 @@ exact location and quote, you do not have evidence for that claim.
 - `conflicting_evidence`: selected sources disagree. Report each version with
   its own citation and do not pick a winner unless the documents say which
   takes precedence.
+- If the question explicitly asks whether two reported totals agree and the
+  source gives different numbers without explaining the difference, use
+  `conflicting_evidence`, even when one is described as rounded and the other
+  as a detailed total. Preserve both source labels and explain that the
+  document does not reconcile them. Do not mark intentionally distinct amounts
+  (such as current charges and a total payable that includes arrears) as a
+  conflict when their relationship is stated.
 
 ## Gaps
 Use `gaps` for anything that limits the answer: missing information,

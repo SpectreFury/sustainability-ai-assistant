@@ -37,6 +37,12 @@ class AnswerEvidenceDraft(BaseModel):
     quote: str = Field(min_length=1, max_length=4000)
 
 
+class AnswerClaimDraft(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=100)
+    calculation_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
 class AnswerKeyValueDraft(BaseModel):
     label: str = Field(min_length=1, max_length=300)
     value: str | None = None
@@ -83,7 +89,10 @@ class AnswerCalculationDraft(BaseModel):
 
 class AnswerDraft(BaseModel):
     status: AnswerStatus
+    # `answer` remains for compatibility with persisted/legacy drafts. New model
+    # responses provide claims; the server renders their citations.
     answer: str = Field(min_length=1, max_length=12000)
+    claims: list[AnswerClaimDraft] = Field(default_factory=list, max_length=100)
     key_values: list[AnswerKeyValueDraft] = Field(default_factory=list, max_length=100)
     calculations: list[AnswerCalculationDraft] = Field(default_factory=list, max_length=50)
     evidence: list[AnswerEvidenceDraft] = Field(default_factory=list, max_length=100)

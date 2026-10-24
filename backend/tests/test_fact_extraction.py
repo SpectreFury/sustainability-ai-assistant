@@ -285,7 +285,10 @@ class FactExtractionTests(unittest.TestCase):
         with (
             patch.dict(
                 "os.environ",
-                {"GEMINI_API_KEY": "test-key", "GEMINI_MODEL": "gemini-test"},
+                {
+                    "GEMINI_API_KEY": "test-key",
+                    "DOCUMENT_EXTRACTION_MODEL": "gemini-test",
+                },
             ),
             patch("langchain_google_genai.ChatGoogleGenerativeAI", FakeChatModel),
             patch(

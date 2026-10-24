@@ -7,7 +7,9 @@ directly from the existing Python environment. The API publishes jobs to Redis
 after saving their database records. Set
 `DATABASE_URL` to `postgresql+asyncpg://user:password@localhost:5432/kuki` and
 `REDIS_URL` to `redis://localhost:6379/0` in `.env`; also fill in the Cloudinary,
-Gemini, and authentication settings.
+Gemini, and authentication settings. Select the document fact extraction model
+with `DOCUMENT_EXTRACTION_MODEL` and the model used to generate Ask AI and
+evaluation answers with `ANSWER_GENERATION_MODEL`.
 
 Start the local dependencies from this directory:
 
@@ -38,17 +40,19 @@ delete that local data.
 
 ## Source-backed evaluations
 
-The Evaluations page runs the versioned `kuki-dataset-v1` case pack through the
+The Evaluations page runs the versioned `kuki-dataset-v4` case pack through the
 current extraction, answer, and financial-year workflows. Upload the matching
 source files with these exact filenames:
 
 - `Annual Electricity Consumption.xlsx`
+- `Adani commercial electricity bill.pdf`
+- `BESCOM Commercial Electricity Bill.pdf`
 - `form 3 filled.docx.pdf`
 - `quality_policy_nestle.pdf`
 - `water_bill_invoice.pdf`
 
 Each run pins their file hashes, re-downloads the original bytes, and freshly
-extracts each available source once before asking and scoring ten
+extracts each available source once before asking and scoring thirteen
 question-answer cases. A separate multi-resource FY case checks coverage and
 no-data handling through the Financial-Year Summary service against the
 workbook extraction pinned at run creation. Process the workbook successfully
@@ -63,8 +67,8 @@ The case-pack hash, answer and extraction prompt hashes, model names, uploaded
 file hashes, fresh extraction outputs, results, and dimension checks are saved
 for each run. Extraction facts and generated answers are scored separately. A
 pass rate describes this case pack only; it is not a claim of performance on
-unseen documents. With all four source files uploaded, a run makes up to four
-fresh extraction calls plus up to ten answer calls, so it requires the
+unseen documents. With all six source files uploaded, a run makes up to six
+fresh extraction calls plus up to thirteen answer calls, so it requires the
 configured Gemini credentials and incurs the corresponding model usage. The FY
 case is blocked when the workbook has no successful persisted extraction at
 the time the run starts.

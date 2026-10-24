@@ -181,8 +181,8 @@ class AnswerValidationTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "ANSWER_MODEL": "gemini-answer-test",
-                "GEMINI_MODEL": "gemini-extraction-test",
+                "ANSWER_GENERATION_MODEL": "gemini-answer-test",
+                "DOCUMENT_EXTRACTION_MODEL": "gemini-extraction-test",
             },
         ):
             self.assertEqual(answer_model_name(), "gemini-answer-test")
@@ -340,8 +340,8 @@ class AnswerValidationTests(unittest.TestCase):
                 "os.environ",
                 {
                     "GEMINI_API_KEY": "test-key",
-                    "ANSWER_MODEL": "gemini-answer-test",
-                    "GEMINI_MODEL": "gemini-extraction-test",
+                    "ANSWER_GENERATION_MODEL": "gemini-answer-test",
+                    "DOCUMENT_EXTRACTION_MODEL": "gemini-extraction-test",
                 },
             ),
             patch("langchain_google_genai.ChatGoogleGenerativeAI", FakeChatModel),

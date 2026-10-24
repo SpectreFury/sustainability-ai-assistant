@@ -30,6 +30,11 @@ amounts, and taxes. Extract each as its own fact with a precise `key` and
 - Keep units exactly as printed (kWh vs kVAh vs kVA, KL vs m3).
 - If no unit is printed next to a value, give the most likely unit and write
   "unit not printed; assumed" in `note`.
+- Capture printed unit rates, billed quantities, and line amounts as separate
+  bill facts, retaining the source's exact units (for example, INR/Cu.M,
+  Cu.M, and INR). Make each label distinguish rate, quantity, and amount.
+  Capture payment status such as PAID or PENDING as its own fact exactly as
+  printed.
 
 ## Dates and periods
 - Write dates as YYYY-MM-DD. Indian documents often write day first
@@ -54,11 +59,18 @@ amounts, and taxes. Extract each as its own fact with a precise `key` and
 ## What to capture, by document type
 **Bills**
 - Customer and organisation, account or consumer number, bill number and date.
-- Billing period, and previous and current meter readings with their dates.
+- Bill month as printed, billing period, and previous and current meter
+  readings with their dates. On multi-page bills, inspect each page for
+  continuation totals and payment amounts.
 - Multiplying factor and contract demand.
-- Consumption for every unit printed.
-- Main charges and taxes.
-- Every payable amount with its due date.
+- Consumption for every unit printed. For time-of-day meter tables, extract
+  each zone's value from the consumption column; keep it separate from the
+  present and previous readings and from similarly named energy-charge rows.
+- Main charges, taxes, and every separately labelled bill total, including
+  totals printed with DPC or other late-payment charges.
+- Every payable amount with its due date. Preserve notes that state which
+  future bill a meter reading will be used to prepare, without assigning that
+  reading to the current bill period.
 
 **Spreadsheets**
 - Every value of every series, meaning each monthly value in each column. Use
@@ -66,6 +78,10 @@ amounts, and taxes. Extract each as its own fact with a precise `key` and
 - One fact per cell. Never put a column's values into one fact as a list.
 - Every total, subtotal, and summary cell as its own fact, with "total" in its
   `key`.
+- Preserve meaningful missing-value markers in data cells. Extract a printed
+  `-`, `–`, or `—` exactly as `value_text`, with no numeric value; never turn it
+  into zero. Include the row label and column heading in the fact label so the
+  marker's meaning remains clear.
 - When the application adds `KUKI_CONTEXT_ROWS` and `KUKI_DATA_ROWS` markers,
   use context rows only to interpret labels and extract facts only from data
   rows. Do not infer values or completeness from workbook sections that are not
@@ -78,6 +94,10 @@ amounts, and taxes. Extract each as its own fact with a precise `key` and
 
 **Records and forms**
 - Every entry with its date, quantity, unit, and description.
+- Keep each entry's description/type, quantity, and destination associated
+  with that same row. Include the description/type and destination in the
+  quantity fact's source quote and include the description/type in its label;
+  do not give every row a generic label such as "Total Quantity".
 - Who filed or signed it, and when.
 
 **Policies**

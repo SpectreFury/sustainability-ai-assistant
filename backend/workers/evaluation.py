@@ -55,6 +55,7 @@ class _EvaluationAnswerFailure(RuntimeError):
         self.retryable = bool(getattr(error, "retryable", False))
         self.cause_type = getattr(error, "cause_type", None) or type(error).__name__
         self.status_code = getattr(error, "status_code", None)
+        self.diagnostic = getattr(error, "diagnostic", None)
         super().__init__("Evaluation answer generation failed.")
 
 
@@ -713,6 +714,7 @@ async def _evaluate_case(
         "failure_type": None,
         "failure_attempts": None,
         "retryable": None,
+        "failure_diagnostic": None,
         "answer_attempts": None,
         "document_snapshot": {},
         "duration_ms": None,
@@ -744,13 +746,14 @@ async def _evaluate_case(
         case_result["answer_attempts"] = answer_attempts
     except _EvaluationAnswerFailure as failure:
         logger.warning(
-            "event=evaluation_answer_failed run_id=%s case_id=%s stage=llm_answer error_type=%s attempts=%s retryable=%s status_code=%s",
+            "event=evaluation_answer_failed run_id=%s case_id=%s stage=llm_answer error_type=%s attempts=%s retryable=%s status_code=%s diagnostic=%s",
             run_id,
             case["id"],
             failure.cause_type,
             failure.attempts,
             failure.retryable,
             failure.status_code,
+            failure.diagnostic,
         )
         case_result["status"] = "error"
         case_result["error_message"] = (
@@ -761,6 +764,7 @@ async def _evaluate_case(
         case_result["failure_type"] = failure.cause_type
         case_result["failure_attempts"] = failure.attempts
         case_result["retryable"] = failure.retryable
+        case_result["failure_diagnostic"] = failure.diagnostic
         case_result["duration_ms"] = int(
             (datetime.now(UTC) - started).total_seconds() * 1000
         )
@@ -825,9 +829,10 @@ async def _generate_evaluation_answer(
             retryable = bool(getattr(error, "retryable", False))
             cause_type = getattr(error, "cause_type", None) or type(error).__name__
             status_code = getattr(error, "status_code", None)
+            diagnostic = getattr(error, "diagnostic", None)
             duration_ms = int((perf_counter() - attempt_started) * 1000)
             logger.warning(
-                "Gemini evaluation answer failed | event=stage_failed task=evaluation stage=llm_answer run_id=%s case_id=%s attempt=%s/%s duration_ms=%s error_type=%s retryable=%s status_code=%s",
+                "Gemini evaluation answer failed | event=stage_failed task=evaluation stage=llm_answer run_id=%s case_id=%s attempt=%s/%s duration_ms=%s error_type=%s retryable=%s status_code=%s diagnostic=%s",
                 run_id,
                 case["id"],
                 attempt,
@@ -836,6 +841,7 @@ async def _generate_evaluation_answer(
                 cause_type,
                 retryable,
                 status_code,
+                diagnostic,
             )
             if retryable and attempt < _MAX_ANSWER_ATTEMPTS:
                 delay = retry_delay_seconds(attempt)

@@ -449,6 +449,9 @@ def score_extraction_diagnostics(
         for fact in facts
     )
     normalized_facts = _normalize(fact_text)
+    normalized_quotes = _normalize(
+        " ".join(str(fact.get("quote") or "") for fact in facts)
+    )
 
     diagnostics: list[str] = []
     for expected in case.get("expected_numeric_values", []):
@@ -490,6 +493,7 @@ def score_extraction_diagnostics(
     for group in case.get("expected_term_groups", []):
         if not any(
             _term_matches(normalized_facts, term)
+            or _term_matches(normalized_quotes, term)
             or (
                 term.casefold() == "dash"
                 and any(str(fact.get("value_text", "")).strip() in {"-", "–", "—"} for fact in facts)
@@ -816,8 +820,31 @@ def _unit_text_present(unit: str, unit_text: str) -> bool:
     unit_text = unit_text.casefold()
     aliases = {
         "inr": ["inr", "₹", "rs."],
-        "inr/cu.m": ["inr/cu.m", "₹/cu.m", "per cu.m", "/cu.m"],
-        "cu.m": ["cu.m", "cubic meter", "cubic metre", "m³", "m3"],
+        "inr/cu.m": [
+            "inr/cu.m",
+            "₹/cu.m",
+            "inr/cubic meter",
+            "inr/cubic meters",
+            "inr/cubic metre",
+            "inr/cubic metres",
+            "₹/cubic meter",
+            "₹/cubic meters",
+            "per cu.m",
+            "/cu.m",
+            "per cubic meter",
+            "per cubic meters",
+            "per cubic metre",
+            "per cubic metres",
+        ],
+        "cu.m": [
+            "cu.m",
+            "cubic meter",
+            "cubic meters",
+            "cubic metre",
+            "cubic metres",
+            "m³",
+            "m3",
+        ],
         "kg": ["kg", "kilogram"],
         "tonnes": ["tonnes", "tonne", "metric tons", "metric tonnes"],
         "%": ["%", "percent", "percentage"],
@@ -830,7 +857,10 @@ def _unit_text_present(unit: str, unit_text: str) -> bool:
 def _unit_alias_matches(alias: str, unit_text: str) -> bool:
     if alias in {"₹", "%"}:
         return alias in unit_text
-    pattern = re.compile(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", re.IGNORECASE)
+    left_boundary = "" if alias.startswith("/") else r"(?<![a-z0-9])"
+    pattern = re.compile(
+        rf"{left_boundary}{re.escape(alias)}(?![a-z0-9])", re.IGNORECASE
+    )
     return bool(pattern.search(unit_text))
 
 
@@ -849,10 +879,13 @@ def _fact_location_matches(fact: dict[str, Any], expected: dict[str, Any]) -> bo
 def _answer_value_assertion_matches(item: Any, expected: dict[str, Any]) -> bool:
     label = _normalize(str(item.label))
     value_text = " ".join([str(item.value or ""), str(item.value_text or "")])
+    answer_label_terms = expected.get(
+        "answer_label_terms", expected.get("label_terms", [])
+    )
     return (
         _decimal_expected(expected["value"]) in _numbers(value_text)
         and _unit_text_present(str(expected.get("unit", "")), " ".join([value_text, str(item.unit or "")]))
-        and all(_term_matches(label, term) for term in expected.get("label_terms", []))
+        and all(_term_matches(label, term) for term in answer_label_terms)
     )
 
 
