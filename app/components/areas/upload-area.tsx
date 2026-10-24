@@ -76,6 +76,7 @@ export function UploadArea() {
       </Stack>
       <FileUpload.Root
         disabled={uploadMutation.isPending}
+        maxFiles={Number.MAX_SAFE_INTEGER}
         accept={{
           "application/pdf": [".pdf"],
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
