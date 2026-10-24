@@ -72,20 +72,21 @@ locations, uncertainty and missing-value behavior, and selected calculations.
 Completed evaluation results are persisted in Postgres and the repository
 includes a portable SQL snapshot at
 [`backend/evaluations/seeds/evaluation_runs.sql`](backend/evaluations/seeds/evaluation_runs.sql).
-The snapshot contains these historical runs:
+The snapshot contains historical runs for `kuki-dataset-v1` through
+`kuki-dataset-v4`.
+
+### Saved comparison: v1 to v2
 
 | Case-set version | Cases passing | Pass rate |
 | --- | ---: | ---: |
-| `kuki-dataset-v1` (initial run) | 2 / 11 | 18.2% |
-| `kuki-dataset-v4` (current case pack) | 10 / 14 | 71.4% |
+| `kuki-dataset-v1` | 2 / 11 | 18.2% |
+| `kuki-dataset-v2` | 10 / 11 | 90.9% |
 
-## Evals Improvement
-
-### V1
-<img width="1906" height="959" alt="image" src="https://github.com/user-attachments/assets/9cd983f5-5762-4e7a-91f5-3b292950c776" />
-
-### V4
-<img width="1906" height="959" alt="image" src="https://github.com/user-attachments/assets/db013082-4891-4a77-a1a8-72dfc3e8edcf" />
+The saved v2 run passed eight more cases than v1. Treat this as a historical
+version-to-version comparison, not a controlled A/B test: both runs recorded 11
+cases, but their case-set and answer/extraction prompt hashes differ. The later
+v3 and v4 runs each used a 14-case pack, so they are separate results and are
+not included in this comparison.
 
 ## Approach and design choices
 
