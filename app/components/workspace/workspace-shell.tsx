@@ -7,6 +7,7 @@ import { usePathname, useRouter } from "next/navigation"
 import type { ReactNode } from "react"
 import { useState } from "react"
 import {
+  LuCalendarDays,
   LuFileCheck2,
   LuFiles,
   LuLogOut,
@@ -40,7 +41,9 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     ? "documents"
     : pathname.startsWith("/workspace/upload")
       ? "upload"
-      : "ask"
+      : pathname.startsWith("/workspace/financial-year")
+        ? "financial-year"
+        : "ask"
 
   return (
     <div className="workspace-app">
@@ -85,6 +88,14 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           >
             <LuSparkles aria-hidden="true" />
             <span>Ask AI</span>
+          </Link>
+          <Link
+            className={`workspace-nav-item ${activePage === "financial-year" ? "is-active" : ""}`}
+            aria-current={activePage === "financial-year" ? "page" : undefined}
+            href="/workspace/financial-year"
+          >
+            <LuCalendarDays aria-hidden="true" />
+            <span>Financial-Year Summary</span>
           </Link>
         </nav>
 

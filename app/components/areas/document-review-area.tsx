@@ -12,7 +12,7 @@ import {
 } from "@/api/documents"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import Link from "next/link"
-import { useMemo, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import {
   LuArrowLeft,
   LuCheck,
@@ -520,7 +520,12 @@ export function DocumentReviewArea({ documentId }: { documentId: string }) {
     })
   const [drafts, setDrafts] = useState<DraftMap>({})
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [linkedFactId, setLinkedFactId] = useState<string | null>(null)
   const [manualPage, setManualPage] = useState<number | null>(null)
+
+  useEffect(() => {
+    setLinkedFactId(new URLSearchParams(window.location.search).get("fact"))
+  }, [])
 
   const dirtyFacts = useMemo<ReviewFactUpdate[]>(() => {
     if (!review) return []
@@ -573,7 +578,7 @@ export function DocumentReviewArea({ documentId }: { documentId: string }) {
     )
   }
 
-  const selectedFact = review.facts.find((fact) => fact.id === selectedId) ?? review.facts[0] ?? null
+  const selectedFact = review.facts.find((fact) => fact.id === (selectedId ?? linkedFactId)) ?? review.facts[0] ?? null
   const selectedPage = manualPage ?? selectedFact?.locator.page ?? 1
   const validationFacts = review.facts.map((fact) => ({
     ...fact,

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers.answers import router as answers_router
 from routers.auth import router as auth_router
 from routers.documents import router as documents_router
+from routers.financial_year import router as financial_year_router
 
 
 @asynccontextmanager
@@ -37,3 +38,4 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(answers_router)
+app.include_router(financial_year_router)

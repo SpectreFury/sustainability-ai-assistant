@@ -91,6 +91,113 @@ type CloudinaryUpload = {
 
 export type FileUploadStatus = "uploading" | "uploaded" | "failed"
 
+export type FinancialYearOption = { value: string; label: string }
+export type FinancialYearOrganisationOption = { value: string; label: string }
+export type FinancialYearDocumentOption = {
+  id: string
+  filename: string
+  status: "pending" | "processing" | "success" | "failed"
+  organisation: string | null
+  has_successful_extraction: boolean
+  selected: boolean
+}
+export type FinancialYearMonth = {
+  label: string
+  covered: boolean
+  value: string | null
+}
+export type FinancialYearMetric = {
+  metric: string
+  label: string
+  series: string | null
+  unit: string | null
+  value: string | null
+  status: "reported" | "calculated" | "no_data" | "conflict"
+  period_label: string
+  method: string
+  calculation: string | null
+  months_covered: number
+  months: FinancialYearMonth[]
+  source_document_ids: string[]
+  note: string | null
+}
+export type FinancialYearSource = {
+  fact_id: string
+  document_id: string
+  filename: string
+  label: string
+  metric: string | null
+  series: string | null
+  unit: string | null
+  value: string
+  value_text: string
+  period_start: string | null
+  period_end: string | null
+  locator: ReviewLocator
+  quote: string | null
+  verified: boolean
+  treatment: "primary" | "corroboration" | "excluded" | "supporting"
+  reason: string
+}
+export type FinancialYearExcludedDocument = {
+  id: string
+  filename: string
+  organisation: string | null
+  status: string
+  reason: string
+}
+export type FinancialYearSummary = {
+  financial_year: string
+  financial_year_start: string
+  financial_year_end: string
+  financial_year_options: FinancialYearOption[]
+  organisation: string | null
+  organisation_options: FinancialYearOrganisationOption[]
+  documents: FinancialYearDocumentOption[]
+  selected_document_ids: string[]
+  primary_source_count: number
+  corroborating_source_count: number
+  coverage_status: "complete" | "partial" | "no_data"
+  metrics: FinancialYearMetric[]
+  sources: FinancialYearSource[]
+  excluded_documents: FinancialYearExcludedDocument[]
+  gaps: string[]
+}
+
+export type FinancialYearSummaryFilters = {
+  financialYear?: string
+  organisation?: string
+  documentIds?: string[] | null
+}
+
+export async function getFinancialYearSummary(
+  filters: FinancialYearSummaryFilters,
+): Promise<FinancialYearSummary> {
+  if (!backendUrl) throw new Error("NEXT_PUBLIC_BACKEND_URL is not set.")
+
+  const query = new URLSearchParams()
+  if (filters.financialYear) query.set("financial_year", filters.financialYear)
+  if (filters.organisation) query.set("organisation", filters.organisation)
+  if (filters.documentIds !== null && filters.documentIds !== undefined) {
+    query.set("document_scope", "selected")
+  }
+  filters.documentIds?.forEach((id) => query.append("document_ids", id))
+
+  const response = await fetch(
+    `${backendUrl}/financial-year/summary?${query.toString()}`,
+    { credentials: "include" },
+  )
+  if (!response.ok) {
+    const result = await response.json().catch(() => null)
+    throw new Error(
+      typeof result?.detail === "string"
+        ? result.detail
+        : "Unable to load the financial-year summary.",
+    )
+  }
+  return response.json()
+}
+
 const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
 
 export async function getDocuments(): Promise<DocumentRecord[]> {
