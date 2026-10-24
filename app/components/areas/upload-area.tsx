@@ -75,7 +75,7 @@ export function UploadArea() {
         <Heading size="2xl">Upload documents</Heading>
       </Stack>
       <FileUpload.Root
-        maxFiles={10}
+        disabled={uploadMutation.isPending}
         accept={{
           "application/pdf": [".pdf"],
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
@@ -126,7 +126,7 @@ export function UploadArea() {
                       </Button>
                     </FileUpload.Trigger>
                     <Text color="fg.muted" fontSize="sm">
-                      Up to 10 documents at a time
+                      No file-count limit. Uploads run a few at a time.
                     </Text>
                   </FileUpload.DropzoneContent>
                 </FileUpload.Dropzone>
@@ -155,6 +155,11 @@ export function UploadArea() {
                       <FileUpload.ItemContent>
                         <FileUpload.ItemName />
                         <FileUpload.ItemSizeText />
+                        {fileStatuses[fileKey(file)] === "queued" && (
+                          <Text fontSize="sm" color="fg.muted">
+                            Waiting to upload
+                          </Text>
+                        )}
                         {fileStatuses[fileKey(file)] === "uploading" && (
                           <HStack gap="2" color="fg.muted">
                             <Spinner size="xs" color="teal.500" />

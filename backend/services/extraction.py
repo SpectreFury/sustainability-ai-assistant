@@ -10,7 +10,7 @@ from services.errors import TemporaryExtractionError
 from utils.cloudinary import create_signed_raw_download_url
 
 
-_MAX_DOCUMENT_BYTES = int(os.getenv("EXTRACTION_MAX_BYTES", str(20 * 1024 * 1024)))
+_MAX_DOCUMENT_BYTES = int(os.getenv("EXTRACTION_MAX_BYTES", str(50 * 1024 * 1024)))
 
 
 async def download_document(
