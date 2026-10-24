@@ -2,22 +2,26 @@ import asyncio
 import logging
 import os
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 
 from broker import broker
 from db import SessionLocal
-from models import Document, ExtractionOutbox, ExtractionRun
+from models import Document, ExtractionRun
 from services.errors import TemporaryExtractionError
 from services.extraction import download_document, extract_document
 from services.extraction_queue import (
     MAX_EXTRACTION_ATTEMPTS,
-    add_extraction_attempt,
     retry_delay_seconds,
 )
 from services.fact_persistence import persist_extraction
 from services.text_sanitization import sanitize_json, sanitize_text
+from utils.worker_logging import configure_worker_logging
+# Register evaluation tasks on the same broker so the existing worker command
+# can consume both document processing and evaluation jobs.
+from workers.evaluation import process_evaluation as _process_evaluation
 
 logger = logging.getLogger(__name__)
 _LEASE_SECONDS = max(30, int(os.getenv("EXTRACTION_RUN_LEASE_SECONDS", "120")))
@@ -29,15 +33,29 @@ _HEARTBEAT_SECONDS = max(
     ),
 )
 
+if broker.is_worker_process:
+    configure_worker_logging()
+    logger.info("Worker task registered | task=extraction")
+
 
 @broker.task
 async def process_document(extraction_run_id: str) -> None:
+    configure_worker_logging()
+    logger.info(
+        "event=worker_task_received task=extraction run_id=%s",
+        extraction_run_id,
+    )
     try:
         parsed_run_id = UUID(extraction_run_id)
     except ValueError:
-        logger.error("Received an invalid extraction run id: %s", extraction_run_id)
+        logger.error(
+            "event=worker_task_rejected task=extraction reason=invalid_run_id run_id=%s",
+            extraction_run_id,
+        )
         return
 
+    job_started = perf_counter()
+    stage = "claim"
     document_id: UUID | None = None
     lease_token = uuid4()
     heartbeat_task: asyncio.Task | None = None
@@ -48,18 +66,33 @@ async def process_document(extraction_run_id: str) -> None:
                 update(ExtractionRun)
                 .where(
                     ExtractionRun.id == parsed_run_id,
-                    ExtractionRun.status == "queued",
+                    or_(
+                        ExtractionRun.status == "queued",
+                        and_(
+                            ExtractionRun.status == "running",
+                            or_(
+                                ExtractionRun.lease_expires_at.is_(None),
+                                ExtractionRun.lease_expires_at <= now,
+                            ),
+                        ),
+                    ),
                 )
                 .values(
                     status="running",
                     lease_token=lease_token,
                     heartbeat_at=now,
                     lease_expires_at=now + timedelta(seconds=_LEASE_SECONDS),
+                    completed_at=None,
+                    error_message=None,
                 )
                 .returning(ExtractionRun.document_id, ExtractionRun.attempt_number)
             )
             claimed = claim.one_or_none()
             if claimed is None:
+                logger.info(
+                    "event=worker_task_skipped task=extraction run_id=%s reason=not_queued_or_already_claimed",
+                    parsed_run_id,
+                )
                 return
 
             document_id, attempt_number = claimed
@@ -77,6 +110,11 @@ async def process_document(extraction_run_id: str) -> None:
                     run.lease_token = None
                     run.lease_expires_at = None
                 await session.commit()
+                logger.warning(
+                    "event=worker_task_rejected task=extraction run_id=%s document_id=%s reason=document_not_processing",
+                    parsed_run_id,
+                    document_id,
+                )
                 return
 
             document.attempt_count = attempt_number
@@ -87,18 +125,12 @@ async def process_document(extraction_run_id: str) -> None:
             cloudinary_public_id = document.cloudinary_public_id
             filename = document.filename
             file_hash = document.file_hash
-            await session.execute(
-                update(ExtractionOutbox)
-                .where(
-                    ExtractionOutbox.extraction_run_id == parsed_run_id,
-                    ExtractionOutbox.worker_claimed_at.is_(None),
-                )
-                .values(
-                    worker_claimed_at=now,
-                    dispatch_lease_token=None,
-                    dispatch_lease_expires_at=None,
-                    next_dispatch_at=None,
-                )
+            logger.info(
+                "event=worker_task_claimed task=extraction run_id=%s document_id=%s filename=%r attempt=%s",
+                parsed_run_id,
+                document_id,
+                filename,
+                attempt_number,
             )
             await session.commit()
 
@@ -110,23 +142,86 @@ async def process_document(extraction_run_id: str) -> None:
         if not cloudinary_public_id:
             raise ValueError("Document has no Cloudinary public ID.")
 
-        content = await download_document(cloudinary_public_id, filename, file_hash)
-        extracted = await extract_document(
+        stage = "cloudinary_download"
+        download_started = perf_counter()
+        logger.info(
+            "Fetching from Cloudinary | event=stage_started task=extraction stage=cloudinary_download run_id=%s document_id=%s filename=%r",
+            parsed_run_id,
+            document_id,
             filename,
-            content,
-            trace_context={
-                "document_id": str(document_id),
-                "extraction_run_id": str(parsed_run_id),
-                "attempt_number": str(attempt_number),
-            },
+        )
+        try:
+            content = await download_document(
+                cloudinary_public_id, filename, file_hash
+            )
+        except Exception as error:
+            logger.error(
+                "Cloudinary fetch failed | event=stage_failed task=extraction stage=cloudinary_download run_id=%s document_id=%s filename=%r duration_ms=%s error_type=%s",
+                parsed_run_id,
+                document_id,
+                filename,
+                int((perf_counter() - download_started) * 1000),
+                type(error).__name__,
+            )
+            raise
+        logger.info(
+            "Fetched from Cloudinary | event=stage_finished task=extraction stage=cloudinary_download run_id=%s document_id=%s filename=%r duration_ms=%s bytes=%s",
+            parsed_run_id,
+            document_id,
+            filename,
+            int((perf_counter() - download_started) * 1000),
+            len(content),
+        )
+
+        stage = "llm_extraction"
+        extraction_started = perf_counter()
+        logger.info(
+            "Sending document to Gemini for fact extraction | event=stage_started task=extraction stage=llm_extraction run_id=%s document_id=%s filename=%r bytes=%s",
+            parsed_run_id,
+            document_id,
+            filename,
+            len(content),
+        )
+        try:
+            extracted = await extract_document(
+                filename,
+                content,
+                trace_context={
+                    "document_id": str(document_id),
+                    "extraction_run_id": str(parsed_run_id),
+                    "attempt_number": str(attempt_number),
+                },
+            )
+        except Exception as error:
+            logger.error(
+                "Gemini fact extraction failed | event=stage_failed task=extraction stage=llm_extraction run_id=%s document_id=%s filename=%r duration_ms=%s error_type=%s",
+                parsed_run_id,
+                document_id,
+                filename,
+                int((perf_counter() - extraction_started) * 1000),
+                type(error).__name__,
+            )
+            raise
+        logger.info(
+            "Received extraction from Gemini | event=stage_finished task=extraction stage=llm_extraction run_id=%s document_id=%s filename=%r duration_ms=%s model=%s pipeline=%s facts=%s verified_facts=%s segments=%s",
+            parsed_run_id,
+            document_id,
+            filename,
+            int((perf_counter() - extraction_started) * 1000),
+            extracted.model,
+            extracted.pipeline,
+            len(extracted.facts),
+            sum(fact.verified for fact in extracted.facts),
+            len(extracted.segments),
         )
         if not extracted.facts:
             raise ValueError("No supported facts were extracted from this document.")
 
+        stage = "persist_result"
         async with SessionLocal() as session:
-            # Lock the run before checking its fencing token. A recovery sweep
-            # either wins first and makes this attempt a no-op, or waits until
-            # this complete result transaction commits.
+            # Lock the run before checking its fencing token. A redelivered
+            # task can reclaim an expired lease, while this token prevents an
+            # older worker attempt from overwriting the reclaimed result.
             run = await session.scalar(
                 select(ExtractionRun)
                 .where(ExtractionRun.id == parsed_run_id)
@@ -147,6 +242,11 @@ async def process_document(extraction_run_id: str) -> None:
                 or document is None
                 or document.status != "processing"
             ):
+                logger.warning(
+                    "event=worker_result_discarded task=extraction run_id=%s document_id=%s reason=lease_or_document_state_changed",
+                    parsed_run_id,
+                    document_id,
+                )
                 return
 
             await persist_extraction(
@@ -186,13 +286,67 @@ async def process_document(extraction_run_id: str) -> None:
             document.next_retry_at = None
             document.retry_count = 0
             await session.commit()
+            logger.info(
+                "event=worker_task_finished task=extraction status=succeeded run_id=%s document_id=%s filename=%r attempt=%s duration_ms=%s facts=%s verified_facts=%s model=%s",
+                parsed_run_id,
+                document_id,
+                filename,
+                attempt_number,
+                int((perf_counter() - job_started) * 1000),
+                len(extracted.facts),
+                sum(fact.verified for fact in extracted.facts),
+                extracted.model,
+            )
     except Exception as error:
         logger.exception(
-            "Extraction failed for document %s (run %s)",
+            "event=worker_task_failed task=extraction stage=%s run_id=%s document_id=%s error_type=%s",
+            stage,
+            parsed_run_id,
             document_id,
-            extraction_run_id,
+            type(error).__name__,
         )
-        await _mark_failed(parsed_run_id, document_id, lease_token, error)
+        retry_delay = await _mark_failed(
+            parsed_run_id,
+            document_id,
+            lease_token,
+            error,
+        )
+        if retry_delay is not None:
+            await asyncio.sleep(retry_delay)
+            try:
+                publish_started = perf_counter()
+                await process_document.kiq(str(parsed_run_id))
+            except Exception as publish_error:
+                logger.exception(
+                    "event=retry_publish_failed task=extraction run_id=%s document_id=%s error_type=%s",
+                    parsed_run_id,
+                    document_id,
+                    type(publish_error).__name__,
+                )
+                await _mark_retry_enqueue_failed(
+                    parsed_run_id,
+                    document_id,
+                    publish_error,
+                )
+                logger.error(
+                    "event=worker_task_finished task=extraction status=retry_enqueue_failed run_id=%s document_id=%s duration_ms=%s",
+                    parsed_run_id,
+                    document_id,
+                    int((perf_counter() - job_started) * 1000),
+                )
+            else:
+                logger.info(
+                    "event=task_dispatched task=extraction run_id=%s document_id=%s retry=true queue_publish_ms=%s",
+                    parsed_run_id,
+                    document_id,
+                    int((perf_counter() - publish_started) * 1000),
+                )
+                logger.info(
+                    "event=worker_task_finished task=extraction status=retry_scheduled run_id=%s document_id=%s duration_ms=%s",
+                    parsed_run_id,
+                    document_id,
+                    int((perf_counter() - job_started) * 1000),
+                )
     finally:
         if heartbeat_task is not None:
             heartbeat_task.cancel()
@@ -229,7 +383,7 @@ async def _mark_failed(
     document_id: UUID | None,
     lease_token: UUID,
     error: Exception,
-) -> None:
+) -> int | None:
     now = datetime.now(UTC)
     async with SessionLocal() as session:
         run = await session.scalar(
@@ -238,7 +392,7 @@ async def _mark_failed(
             .with_for_update()
         )
         if run is None or run.status != "running" or run.lease_token != lease_token:
-            return
+            return None
         document = None
         if document_id is not None:
             document = await session.scalar(
@@ -247,8 +401,6 @@ async def _mark_failed(
                 .with_for_update()
             )
 
-        run.status = "failed"
-        run.completed_at = now
         run.lease_token = None
         run.lease_expires_at = None
 
@@ -259,24 +411,96 @@ async def _mark_failed(
             and _is_retryable_error(error)
         )
         if can_retry and document is not None:
+            failed_attempt = run.attempt_number
             delay = retry_delay_seconds(run.attempt_number)
+            run.status = "queued"
+            run.completed_at = None
             run.error_message = _user_facing_error(error)
-            await add_extraction_attempt(
-                session,
-                document,
-                available_at=now + timedelta(seconds=delay),
-                retry=True,
-                extraction_version=run.extraction_version,
+            run.attempt_number += 1
+            document.attempt_count = run.attempt_number
+            document.retry_count += 1
+            document.error_message = (
+                "A temporary processing issue occurred. Retrying automatically."
             )
+            document.processing_started_at = None
+            document.next_retry_at = now + timedelta(seconds=delay)
+            await session.commit()
+            logger.warning(
+                "event=worker_retry_scheduled task=extraction run_id=%s document_id=%s filename=%r failed_attempt=%s next_attempt=%s delay_seconds=%s error_type=%s",
+                run_id,
+                document.id,
+                document.filename,
+                failed_attempt,
+                run.attempt_number,
+                delay,
+                type(error).__name__,
+            )
+            return delay
         elif document is not None and document.status == "processing":
+            run.status = "failed"
+            run.completed_at = now
             document.status = "failed"
             document.error_message = _user_facing_error(error)
             document.processing_started_at = None
             document.next_retry_at = None
             run.error_message = document.error_message
         else:
+            run.status = "failed"
+            run.completed_at = now
             run.error_message = _user_facing_error(error)
         await session.commit()
+        logger.error(
+            "event=worker_task_finished task=extraction status=failed run_id=%s document_id=%s filename=%r attempt=%s error_type=%s",
+            run_id,
+            document_id,
+            document.filename if document is not None else None,
+            run.attempt_number,
+            type(error).__name__,
+        )
+        return None
+
+
+async def _mark_retry_enqueue_failed(
+    run_id: UUID,
+    document_id: UUID | None,
+    error: Exception,
+) -> None:
+    now = datetime.now(UTC)
+    async with SessionLocal() as session:
+        run = await session.scalar(
+            select(ExtractionRun)
+            .where(ExtractionRun.id == run_id)
+            .with_for_update()
+        )
+        document = (
+            await session.scalar(
+                select(Document)
+                .where(Document.id == document_id)
+                .with_for_update()
+            )
+            if document_id is not None
+            else None
+        )
+        if run is not None and run.status == "queued":
+            run.status = "failed"
+            run.completed_at = now
+            run.error_message = "Could not submit the automatic retry to Redis."
+            run.lease_token = None
+            run.lease_expires_at = None
+        if document is not None and document.status == "processing":
+            document.status = "pending"
+            document.error_message = (
+                "Automatic retry could not be submitted. Please start processing again."
+            )
+            document.processing_started_at = None
+            document.next_retry_at = None
+        await session.commit()
+    logger.error(
+        "event=worker_retry_abandoned task=extraction run_id=%s document_id=%s error_type=%s",
+        run_id,
+        document_id,
+        type(error).__name__,
+    )
 
 
 def _is_retryable_error(error: Exception) -> bool:

@@ -77,17 +77,37 @@ async def create_answer(
     question: str,
     requested_document_ids: list[UUID],
 ) -> AnswerRecordResponse:
-    documents = await _load_answer_documents(
+    selected_ids, content, answer_status = await generate_answer_for_user(
+        session, user_id, question, requested_document_ids
+    )
+
+    row = AnswerRecord(
+        user_id=user_id,
+        question=question,
+        document_ids=selected_ids,
+        status=answer_status,
+        response=content.model_dump(mode="json"),
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return _answer_record_response(row)
+
+
+async def generate_answer_for_user(
+    session: AsyncSession,
+    user_id: int,
+    question: str,
+    requested_document_ids: list[UUID],
+) -> tuple[list[UUID], AnswerContent, AnswerStatus]:
+    """Run the production answer path without adding a user-visible history row."""
+    documents = await load_answer_documents_for_user(
         session, user_id, requested_document_ids
     )
     selected_ids = [document.id for document in documents]
-    # End the read transaction before waiting on the remote Gemini request.
-    await session.commit()
-
     model_name = answer_model_name()
     if documents:
-        content, answer_status = await generate_answer(question, documents)
-        answer_status = _content_status(content, answer_status)
+        content, answer_status = await generate_answer_for_documents(question, documents)
     else:
         answer_status = "insufficient_evidence"
         content = AnswerContent(
@@ -101,18 +121,29 @@ async def create_answer(
             gaps=["Select at least one successfully processed document."],
             model=model_name,
         )
+    return selected_ids, content, answer_status
 
-    row = AnswerRecord(
-        user_id=user_id,
-        question=question,
-        document_ids=selected_ids,
-        status=answer_status,
-        response=content.model_dump(mode="json"),
+
+async def load_answer_documents_for_user(
+    session: AsyncSession,
+    user_id: int,
+    requested_document_ids: list[UUID],
+) -> list[AnswerDocument]:
+    documents = await _load_answer_documents(
+        session,
+        user_id,
+        requested_document_ids,
     )
-    session.add(row)
+    # End the read transaction before waiting on the remote Gemini request.
     await session.commit()
-    await session.refresh(row)
-    return _answer_record_response(row)
+    return documents
+
+
+async def generate_answer_for_documents(
+    question: str, documents: list[AnswerDocument]
+) -> tuple[AnswerContent, AnswerStatus]:
+    content, status = await generate_answer(question, documents)
+    return content, _content_status(content, status)
 
 
 async def list_user_answers(
@@ -330,7 +361,7 @@ async def _load_answer_documents(
         return []
 
     document_by_id = {document.id: document for document in documents}
-    run_result = await session.execute(
+    run_query = (
         select(ExtractionRun)
         .where(
             ExtractionRun.document_id.in_(document_by_id),
@@ -342,6 +373,7 @@ async def _load_answer_documents(
             ExtractionRun.completed_at.desc(),
         )
     )
+    run_result = await session.execute(run_query)
     latest_runs: dict[UUID, ExtractionRun] = {}
     for run in run_result.scalars().all():
         latest_runs.setdefault(run.document_id, run)

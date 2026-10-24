@@ -2525,6 +2525,11 @@ input:focus-visible {
   @apply [font-weight:650];
 }
 
+.evaluation-live-tag {
+  @apply p-[7px_10px] rounded-[5px] bg-green-pale text-green text-[length:10px];
+  @apply [font-weight:650];
+}
+
 .evaluation-score-grid {
   @apply grid grid-cols-[repeat(3,_minmax(0,_1fr))] gap-[16px] mb-[24px];
 }
@@ -2578,7 +2583,7 @@ input:focus-visible {
 }
 
 .evaluation-dimension-grid {
-  @apply grid grid-cols-[repeat(4,_minmax(0,_1fr))] gap-[14px];
+  @apply grid grid-cols-[repeat(5,_minmax(0,_1fr))] gap-[14px];
 }
 
 .evaluation-dimension {
@@ -2685,6 +2690,15 @@ input:focus-visible {
   @apply [background:#f8e9e6] text-red;
 }
 
+.evaluation-result.is-blocked,
+.evaluation-result.is-pending {
+  @apply [background:#eff1ed] text-muted;
+}
+
+.evaluation-export:disabled {
+  @apply opacity-[0.45] cursor-not-allowed;
+}
+
 .evaluation-marks {
   @apply inline-flex items-center gap-[4px] whitespace-nowrap;
 }
@@ -2703,6 +2717,10 @@ input:focus-visible {
 
 .evaluation-marks .is-fail {
   @apply text-red;
+}
+
+.evaluation-marks .is-pending {
+  @apply text-muted text-[length:10px];
 }
 
 .evaluation-change {
@@ -2945,6 +2963,56 @@ input:focus-visible {
 .evaluation-limitations p,
 .evaluation-not-found p {
   @apply text-muted text-[length:11px] leading-[1.6];
+}
+
+.evaluation-provenance-line {
+  @apply m-[0_0_10px] text-muted text-[length:11px] leading-[1.5];
+}
+
+.evaluation-provenance-line strong {
+  @apply break-all text-ink [font-weight:550];
+}
+
+.evaluation-returned-evidence {
+  @apply grid gap-[10px];
+}
+
+.evaluation-returned-evidence article {
+  @apply p-[12px] border border-line rounded-[7px] [background:#fbfcfa];
+}
+
+.evaluation-returned-evidence strong {
+  @apply text-green text-[length:10px] [font-weight:650];
+}
+
+.evaluation-returned-evidence p {
+  @apply m-[7px_0] text-ink text-[length:11px] leading-[1.55] whitespace-pre-wrap break-words;
+}
+
+.evaluation-returned-evidence span,
+.evaluation-calculation-list p,
+.evaluation-empty-copy {
+  @apply text-muted text-[length:10px] leading-[1.5];
+}
+
+.evaluation-returned-evidence .is-verified {
+  @apply text-green;
+}
+
+.evaluation-returned-evidence .is-unverified {
+  @apply text-red;
+}
+
+.evaluation-calculation-list {
+  @apply mt-[15px] p-[12px] rounded-[7px] bg-green-pale;
+}
+
+.evaluation-calculation-list > strong {
+  @apply text-green text-[length:10px];
+}
+
+.evaluation-calculation-list p {
+  @apply m-[7px_0_0] text-ink;
 }
 
 .evaluation-not-found {

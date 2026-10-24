@@ -110,12 +110,6 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           </Link>
         </nav>
 
-        <div className="workspace-promise">
-          <LuFileCheck2 aria-hidden="true" />
-          <strong>Every answer, anchored.</strong>
-          <p>Trace a number back to the document it came from.</p>
-        </div>
-
         <div className="workspace-account">
           <span className="account-avatar" aria-hidden="true">
             {initials || "WS"}

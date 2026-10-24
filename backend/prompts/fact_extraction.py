@@ -60,6 +60,10 @@ amounts, and taxes. Extract each as its own fact with a precise `key` and
 - One fact per cell. Never put a column's values into one fact as a list.
 - Every total, subtotal, and summary cell as its own fact, with "total" in its
   `key`.
+- When the application adds `KUKI_CONTEXT_ROWS` and `KUKI_DATA_ROWS` markers,
+  use context rows only to interpret labels and extract facts only from data
+  rows. Do not infer values or completeness from workbook sections that are not
+  included.
 - If totals and their parts look inconsistent, describe the conflict in
   `issues` without calculating a corrected value.
 

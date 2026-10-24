@@ -1,6 +1,7 @@
+import logging
 from datetime import UTC, datetime
 from pathlib import PurePath
-from time import time
+from time import perf_counter, time
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
@@ -10,15 +11,17 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Document
+from models import Document, ExtractionRun
 from schemas.documents import (
     DocumentResponse,
     UploadCompleteRequest,
     UploadSignatureRequest,
     UploadSignatureResponse,
 )
-from services.extraction_queue import add_extraction_attempt
+from services.extraction_queue import add_extraction_run
 from utils.cloudinary import configure_cloudinary
+
+logger = logging.getLogger(__name__)
 
 
 async def create_upload_signature(
@@ -171,6 +174,7 @@ async def queue_pending_documents(
     if not documents:
         return []
 
+    queueable: list[tuple[Document, ExtractionRun]] = []
     for document in documents:
         if not document.cloudinary_url:
             document.status = "failed"
@@ -187,11 +191,85 @@ async def queue_pending_documents(
             )
             continue
         document.retry_count = 0
-        await add_extraction_attempt(session, document)
+        run = await add_extraction_run(session, document)
+        queueable.append((document, run))
 
-    # The run and its outbox record commit together. A separate dispatcher
-    # publishes it to Redis and retries publication until a worker claims it.
+    if not queueable:
+        await session.commit()
+        for document in documents:
+            await session.refresh(document)
+        return documents
+
+    try:
+        from workers.extraction import process_document
+    except RuntimeError as error:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Document processing is unavailable. Configure REDIS_URL and "
+                "start the worker."
+            ),
+        ) from error
+
     await session.commit()
+
+    queue_failures = 0
+    for document, run in queueable:
+        publish_started = perf_counter()
+        try:
+            await process_document.kiq(str(run.id))
+        except Exception as error:
+            queue_failures += 1
+            logger.exception(
+                "event=task_publish_failed task=extraction run_id=%s document_id=%s filename=%r error_type=%s",
+                run.id,
+                document.id,
+                document.filename,
+                type(error).__name__,
+            )
+            await session.rollback()
+            persisted_run = await session.scalar(
+                select(ExtractionRun)
+                .where(ExtractionRun.id == run.id)
+                .with_for_update()
+            )
+            persisted_document = await session.scalar(
+                select(Document)
+                .where(Document.id == document.id)
+                .with_for_update()
+            )
+            if persisted_run is not None and persisted_run.status == "queued":
+                persisted_run.status = "failed"
+                persisted_run.error_message = "Could not submit this job to Redis."
+                persisted_run.completed_at = datetime.now(UTC)
+            if (
+                persisted_document is not None
+                and persisted_document.status == "processing"
+            ):
+                persisted_document.status = "pending"
+                persisted_document.error_message = (
+                    "Could not submit this job to the worker queue. Please try again."
+                )
+                persisted_document.processing_started_at = None
+                persisted_document.next_retry_at = None
+            await session.commit()
+            continue
+
+        logger.info(
+            "event=task_dispatched task=extraction run_id=%s document_id=%s filename=%r queue_publish_ms=%s",
+            run.id,
+            document.id,
+            document.filename,
+            int((perf_counter() - publish_started) * 1000),
+        )
+
     for document in documents:
         await session.refresh(document)
+
+    if queue_failures == len(queueable):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not submit processing jobs. Check Redis and try again.",
+        )
     return documents

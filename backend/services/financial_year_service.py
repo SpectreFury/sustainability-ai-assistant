@@ -655,6 +655,7 @@ async def get_financial_year_summary(
     organisation: str | None,
     document_ids: list[UUID] | None,
     selected_document_scope: bool,
+    pinned_extraction_run_ids: dict[UUID, UUID] | None = None,
 ) -> FinancialYearSummaryResponse:
     documents_result = await session.execute(
         select(Document)
@@ -666,7 +667,7 @@ async def get_financial_year_summary(
 
     runs_by_document: dict[UUID, ExtractionRun] = {}
     if document_by_id:
-        runs_result = await session.execute(
+        runs_query = (
             select(ExtractionRun)
             .where(
                 ExtractionRun.document_id.in_(document_by_id),
@@ -678,6 +679,11 @@ async def get_financial_year_summary(
                 ExtractionRun.completed_at.desc(),
             )
         )
+        if pinned_extraction_run_ids:
+            runs_query = runs_query.where(
+                ExtractionRun.id.in_(list(pinned_extraction_run_ids.values()))
+            )
+        runs_result = await session.execute(runs_query)
         for run in runs_result.scalars().all():
             runs_by_document.setdefault(run.document_id, run)
 
