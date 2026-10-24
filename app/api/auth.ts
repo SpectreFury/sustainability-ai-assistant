@@ -7,6 +7,12 @@ type SignupPayload = LoginPayload & {
   username: string
 }
 
+export type CurrentUser = {
+  id: number
+  username: string
+  email: string
+}
+
 const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
 
 export async function login(data: LoginPayload) {
@@ -62,4 +68,17 @@ export async function logout() {
   if (!response.ok) {
     throw new Error("Unable to log out.")
   }
+}
+
+export async function getCurrentUser(): Promise<CurrentUser> {
+  if (!backendUrl) {
+    throw new Error("NEXT_PUBLIC_BACKEND_URL is not set.")
+  }
+
+  const response = await fetch(`${backendUrl}/auth/me`, {
+    credentials: "include",
+    cache: "no-store",
+  })
+  if (!response.ok) throw new Error("Unable to load the signed-in user.")
+  return response.json()
 }
