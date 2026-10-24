@@ -70,7 +70,7 @@ class AnswerKeyValueDraft(BaseModel):
 class AnswerCalculationDraft(BaseModel):
     id: str = Field(pattern=r"^C[1-9][0-9]{0,2}$")
     description: str = Field(min_length=1, max_length=500)
-    expression: str = Field(min_length=1, max_length=500)
+    expression: str = Field(min_length=1, max_length=5000)
     result: str = Field(min_length=1, max_length=100)
     unit: str | None = Field(default=None, max_length=100)
     evidence_ids: list[str] = Field(default_factory=list)
@@ -87,6 +87,14 @@ class AnswerCalculationDraft(BaseModel):
         return format(parsed, "f")
 
 
+class AnswerToolCallDraft(BaseModel):
+    name: Literal["calculate", "financial_year_totals"]
+    expression: str = Field(default="", max_length=5000)
+    financial_year: str = Field(default="", max_length=32)
+    metric: str = Field(default="", max_length=32)
+    document_id: str = Field(default="", max_length=36)
+
+
 class AnswerDraft(BaseModel):
     status: AnswerStatus
     # `answer` remains for compatibility with persisted/legacy drafts. New model
@@ -97,6 +105,7 @@ class AnswerDraft(BaseModel):
     calculations: list[AnswerCalculationDraft] = Field(default_factory=list, max_length=50)
     evidence: list[AnswerEvidenceDraft] = Field(default_factory=list, max_length=100)
     gaps: list[str] = Field(default_factory=list, max_length=50)
+    tool_calls: list[AnswerToolCallDraft] = Field(default_factory=list, max_length=12)
 
 
 class AnswerKeyValue(BaseModel):

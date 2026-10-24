@@ -3,8 +3,10 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
+from typing import Any
 from zoneinfo import ZoneInfo
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -1067,3 +1069,317 @@ async def get_financial_year_summary(
         excluded_documents=excluded_docs,
         gaps=list(dict.fromkeys(unique_gaps)),
     )
+
+
+def summarize_answer_context(
+    documents: list[Any],
+    financial_year: str,
+    metric_filter: str | None = None,
+) -> dict[str, Any]:
+    """Build FY totals from the exact in-scope answer documents and their facts."""
+    normalized_year = re.sub(r"[–—−/]", "-", financial_year.strip())
+    pair = re.fullmatch(
+        r"(?:FY\s*)?(\d{2}|\d{4})\s*-\s*(\d{2}|\d{4})",
+        normalized_year,
+        re.IGNORECASE,
+    )
+    if pair is None:
+        ending_year = re.fullmatch(r"FY\s*'?((?:19|20)\d{2})", financial_year.strip(), re.I)
+        if ending_year is None:
+            raise ValueError("Provide an Indian financial year such as FY 2025-26.")
+        start_year = int(ending_year.group(1)) - 1
+    else:
+        raw_start, raw_end = pair.groups()
+        start_year = int(raw_start)
+        if len(raw_start) == 2:
+            start_year += 2000
+        expected_end = start_year + 1
+        end_year = int(raw_end)
+        if len(raw_end) == 2:
+            end_year += (expected_end // 100) * 100
+            if end_year < expected_end:
+                end_year += 100
+        if end_year != expected_end:
+            raise ValueError("A financial year must run from April through March.")
+    if start_year < 1 or start_year + 1 > 9999:
+        raise ValueError("The financial year is outside the supported range.")
+    if metric_filter and metric_filter not in _METRIC_LABELS:
+        raise ValueError("Unsupported financial-year metric.")
+
+    fy_start = date(start_year, 4, 1)
+    fy_end = date(start_year + 1, 3, 31)
+    metric_names = (metric_filter,) if metric_filter else (
+        *_DEFAULT_METRICS,
+        "fuel",
+        "emissions",
+    )
+    documents_by_organisation: dict[str, tuple[str, list[_DocumentFacts]]] = {}
+    for document in documents:
+        timestamp = getattr(document, "upload_timestamp", None)
+        if timestamp is None:
+            timestamp = datetime.min.replace(tzinfo=ZoneInfo("UTC"))
+        document_proxy = SimpleNamespace(
+            id=document.id,
+            filename=document.filename,
+            document_kind=document.doc_type,
+            entity_name=document.organisation,
+            upload_timestamp=timestamp,
+            status="success",
+        )
+        fact_proxies = []
+        for index, fact in enumerate(document.facts):
+            raw_number = fact.get("value_number")
+            try:
+                number = Decimal(str(raw_number)) if raw_number is not None else None
+            except InvalidOperation:
+                number = None
+            fact_proxies.append(
+                SimpleNamespace(
+                    id=uuid5(
+                        NAMESPACE_URL,
+                        f"{document.id}:{index}:{fact.get('key', '')}",
+                    ),
+                    document_id=document.id,
+                    key=fact.get("key") or "",
+                    label=fact.get("label") or "",
+                    reviewed_label=None,
+                    category=fact.get("category"),
+                    metric=fact.get("metric"),
+                    series=fact.get("series"),
+                    value_text=fact.get("value_text") or "",
+                    value_number=number,
+                    reviewed_value_text=None,
+                    reviewed_value_number=None,
+                    unit=fact.get("unit"),
+                    period_start=_as_date(fact.get("period_start")),
+                    period_end=_as_date(fact.get("period_end")),
+                    note=fact.get("note"),
+                    origin=fact.get("origin") or "reported",
+                    locator=fact.get("locator") or {},
+                    quote=fact.get("quote"),
+                    verified=bool(fact.get("verified")),
+                    reviewed_verified=None,
+                    verification=fact.get("verification") or "",
+                )
+            )
+        item = _DocumentFacts(
+            document=document_proxy,
+            run=SimpleNamespace(result_metadata={}),
+            facts=fact_proxies,
+        )
+        organisation_key = _document_organisation_key(document_proxy)
+        organisation_label = (
+            document.organisation
+            or f"Organisation not stated · {document.filename}"
+        )
+        if organisation_key not in documents_by_organisation:
+            documents_by_organisation[organisation_key] = (organisation_label, [])
+        documents_by_organisation[organisation_key][1].append(item)
+
+    organisations: list[dict[str, Any]] = []
+    all_gaps: list[str] = []
+    for organisation_label, scoped_docs in documents_by_organisation.values():
+        candidates_by_group: dict[tuple[str, str, str], list[_Candidate]] = {}
+        reconciliation_candidates: list[_Candidate] = []
+        gaps: list[str] = []
+        for item in scoped_docs:
+            for fact in item.facts:
+                if fact.metric not in _METRIC_LABELS or fact.metric not in metric_names:
+                    continue
+                if fact.category not in {"consumption", "quantity"} or fact.origin != "reported":
+                    continue
+                start, end = fact.period_start, fact.period_end
+                if start is None or end is None or end < start:
+                    if start is None or start <= fy_end and (end is None or end >= fy_start):
+                        gaps.append(
+                            f"{item.document.filename} has a {fact.metric} value without a clear period; it was not included."
+                        )
+                    continue
+                outside_year = end < fy_start or start > fy_end
+                if outside_year and start <= fy_end and end >= fy_start:
+                    gaps.append(
+                        f"{item.document.filename} covers dates outside the selected financial year; the value was not prorated."
+                    )
+                unit = (fact.unit or "").strip()
+                value = _effective_value(fact)
+                if not unit:
+                    if not outside_year:
+                        gaps.append(
+                            f"{item.document.filename} reports {fact.metric} without a unit; it was not combined."
+                        )
+                    continue
+                if "/" in unit or re.search(r"\bper\b", unit.casefold()):
+                    if not outside_year:
+                        gaps.append(
+                            f"{item.document.filename} reports {fact.metric} in a rate or intensity unit ({unit}); it was not totalled."
+                        )
+                    continue
+                if value is None:
+                    if not outside_year:
+                        gaps.append(
+                            f"{item.document.filename} reports {fact.metric} without a usable numeric value; it was not included."
+                        )
+                    continue
+                candidate = _Candidate(
+                    document=item.document,
+                    fact=fact,
+                    value=value,
+                    unit=unit,
+                    metric=fact.metric,
+                    start=start,
+                    end=end,
+                )
+                reconciliation_candidates.append(candidate)
+                if not outside_year:
+                    candidates_by_group.setdefault(
+                        (fact.metric, unit, _series_key(fact)), []
+                    ).append(candidate)
+
+        reconciliation_gaps = _reconcile_reported_summaries(reconciliation_candidates)
+        for candidate in reconciliation_candidates:
+            crosses_boundary = candidate.start < fy_start or candidate.end > fy_end
+            overlaps_year = candidate.start <= fy_end and candidate.end >= fy_start
+            if crosses_boundary and overlaps_year:
+                candidate.treatment = "excluded"
+                candidate.reason = (
+                    f"{candidate.reconciliation_reason} Its reported period extends beyond this "
+                    "financial year, so it was not included."
+                    if candidate.reconciliation_reason
+                    else "Its reported period extends beyond this financial year, so it was not included."
+                )
+                if not any(
+                    candidate.document.filename in gap and "not prorated" in gap
+                    for gap in gaps
+                ):
+                    gaps.append(
+                        f"{candidate.document.filename} covers dates outside the selected financial year; the value was not prorated."
+                    )
+
+        candidates_by_resource: dict[tuple[str, str], list[_Candidate]] = {}
+        for (metric, unit, _series), candidates in candidates_by_group.items():
+            candidates_by_resource.setdefault((metric, unit), []).extend(candidates)
+        for resource_candidates in candidates_by_resource.values():
+            resource_candidates.sort(
+                key=lambda item: (
+                    item.days,
+                    item.start,
+                    item.end,
+                    *_source_preference(item),
+                    str(item.fact.id),
+                )
+            )
+            seen: list[_Candidate] = []
+            for candidate in resource_candidates:
+                if candidate.treatment == "excluded" and candidate.reason:
+                    continue
+                match = next(
+                    (
+                        item for item in seen
+                        if _series_key(item.fact) != _series_key(candidate.fact)
+                        and item.start == candidate.start
+                        and item.end == candidate.end
+                        and item.value == candidate.value
+                    ),
+                    None,
+                )
+                if match:
+                    candidate.treatment = "corroboration"
+                    candidate.reason = (
+                        "The period and reported value match another named series; this record was not added twice."
+                    )
+                else:
+                    seen.append(candidate)
+
+        metric_groups: dict[str, list[tuple[str, str | None, list[_Candidate]]]] = {}
+        for (metric, unit, _series), candidates in candidates_by_group.items():
+            primary = [
+                item for item in candidates
+                if item.treatment != "corroboration"
+                and not (item.treatment == "excluded" and item.reason)
+            ]
+            if primary:
+                display_series = next(
+                    (
+                        item.fact.series.strip()
+                        for item in candidates
+                        if item.fact.series and item.fact.series.strip()
+                    ),
+                    None,
+                )
+                metric_groups.setdefault(metric, []).append((unit, display_series, primary))
+
+        metrics = []
+        for metric in metric_names:
+            groups = sorted(
+                metric_groups.get(metric, []),
+                key=lambda group: (group[0].casefold(), (group[1] or "").casefold()),
+            )
+            if not groups:
+                metrics.append(
+                    FinancialYearMetric(
+                        metric=metric,
+                        label=_METRIC_LABELS[metric],
+                        series=None,
+                        unit=None,
+                        value=None,
+                        status="conflict" if any("Conflicting" in gap for gap in gaps) else "no_data",
+                        period_label="No usable records",
+                        method="No usable source values",
+                        calculation=None,
+                        months_covered=0,
+                        months=[
+                            FinancialYearMonth(label=_month_label(month), covered=False, value=None)
+                            for month in _FY_MONTHS
+                        ],
+                        source_document_ids=[],
+                    )
+                )
+                continue
+            for unit, series, candidates in groups:
+                summary, metric_gaps = _build_metric(
+                    metric, unit, series, candidates, fy_start, fy_end
+                )
+                metrics.append(summary)
+                gaps.extend(metric_gaps)
+
+        gaps.extend(reconciliation_gaps)
+        source_records = [
+            _source(candidate)
+            for candidate in reconciliation_candidates
+            if candidate.start <= fy_end and candidate.end >= fy_start
+        ]
+        source_records.sort(
+            key=lambda source: (
+                source.period_start or date.min,
+                source.filename.casefold(),
+                str(source.fact_id),
+            )
+        )
+        data_metrics = [metric for metric in metrics if metric.value is not None]
+        has_data = bool(data_metrics) or any(metric.status == "conflict" for metric in metrics)
+        coverage = (
+            "no_data"
+            if not has_data
+            else "complete"
+            if data_metrics and all(metric.months_covered == 12 for metric in data_metrics)
+            else "partial"
+        )
+        unique_gaps = list(dict.fromkeys(gaps))
+        all_gaps.extend(unique_gaps)
+        organisations.append(
+            {
+                "organisation": organisation_label,
+                "coverage_status": coverage,
+                "metrics": [metric.model_dump(mode="json", exclude_none=True) for metric in metrics],
+                "sources": [source.model_dump(mode="json", exclude_none=True) for source in source_records],
+                "gaps": unique_gaps,
+            }
+        )
+
+    return {
+        "financial_year": _fy_label(start_year),
+        "financial_year_start": fy_start.isoformat(),
+        "financial_year_end": fy_end.isoformat(),
+        "organisations": organisations,
+        "gaps": list(dict.fromkeys(all_gaps)),
+    }

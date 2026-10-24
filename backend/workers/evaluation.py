@@ -578,6 +578,7 @@ async def _prepare_source_documents(
             document_id,
             document.filename,
             extracted,
+            document.upload_timestamp,
         )
 
     return documents, errors
@@ -587,6 +588,7 @@ def _answer_document(
     document_id: UUID,
     filename: str,
     extracted: Extraction,
+    upload_timestamp: datetime | None = None,
 ) -> AnswerDocument:
     return AnswerDocument(
         id=document_id,
@@ -624,6 +626,7 @@ def _answer_document(
             for fact in extracted.facts
         ],
         segments=extracted.segments,
+        upload_timestamp=upload_timestamp,
     )
 
 
@@ -823,7 +826,13 @@ async def _generate_evaluation_answer(
         )
         try:
             answer, status = await generate_answer_for_documents(
-                case["question"], documents
+                case["question"],
+                documents,
+                trace_context={
+                    "origin": "evaluation",
+                    "evaluation_run_id": str(run_id),
+                    "case_id": str(case["id"]),
+                },
             )
         except Exception as error:
             retryable = bool(getattr(error, "retryable", False))

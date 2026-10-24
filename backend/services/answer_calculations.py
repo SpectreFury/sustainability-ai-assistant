@@ -59,7 +59,11 @@ def _decimal_cell_values(
 
     cells: dict[str, float | str] = {}
     for segment in segments:
-        if segment.locator.sheet == sheet and segment.cells:
+        if (
+            segment.locator.sheet
+            and segment.locator.sheet.casefold() == sheet.casefold()
+            and segment.cells
+        ):
             cells.update({reference.upper(): value for reference, value in segment.cells.items()})
 
     values: list[Decimal] = []
@@ -78,7 +82,7 @@ def _decimal_cell_values(
 
 def evaluate_expression(expression: str, segments: list[Segment]) -> Decimal:
     """Support arithmetic, a small aggregate-function set, and sheet cell refs."""
-    if not expression or len(expression) > 500:
+    if not expression or len(expression) > 5000:
         raise CalculationError("Expression is empty or too long")
 
     names: dict[str, Decimal | list[Decimal]] = {}
@@ -145,6 +149,41 @@ def evaluate_expression(expression: str, segments: list[Segment]) -> Decimal:
     if isinstance(result, list) or not result.is_finite():
         raise CalculationError("Calculation did not return a finite number")
     return result
+
+
+def blank_cells_in_expression(
+    expression: str,
+    segments: list[Segment],
+    preview_limit: int = 40,
+) -> tuple[int, list[str]]:
+    """Report blank or absent cells inside referenced spreadsheet ranges."""
+    cells_by_sheet: dict[str, dict[str, float | str]] = {}
+    for segment in segments:
+        sheet = segment.locator.sheet
+        if sheet and segment.cells:
+            cells_by_sheet.setdefault(sheet.casefold(), {}).update(
+                {reference.upper(): value for reference, value in segment.cells.items()}
+            )
+
+    blank_references: set[str] = set()
+    for match in _SHEET_RANGE.finditer(expression):
+        sheet = (match.group(1) or match.group(2) or "").strip()
+        cell_range = match.group(3)
+        if ":" not in cell_range:
+            continue
+        references = expand_cell_range(cell_range)
+        if not references or len(references) > 5000:
+            continue
+        cells = cells_by_sheet.get(sheet.casefold(), {})
+        for reference in references:
+            value = cells.get(reference.upper())
+            if reference.upper() not in cells or value is None or (
+                isinstance(value, str) and not value.strip()
+            ):
+                blank_references.add(f"{sheet}!{reference.upper()}")
+
+    ordered = sorted(blank_references, key=str.casefold)
+    return len(ordered), ordered[:preview_limit]
 
 
 def calculation_matches(computed: Decimal, stated: Decimal) -> bool:
