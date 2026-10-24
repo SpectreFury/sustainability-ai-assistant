@@ -1,3 +1,5 @@
+"use client"
+
 import {
   Button,
   FileUpload,
@@ -18,6 +20,7 @@ import {
 } from "@/api/documents"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { LuFile, LuFileSpreadsheet, LuFileText, LuUpload } from "react-icons/lu"
+import Link from "next/link"
 import { useState } from "react"
 
 function fileKey(file: File) {
@@ -256,6 +259,14 @@ function SavedDocumentTile({ document }: { document: DocumentRecord }) {
               }[document.status]}
           </Text>
         </HStack>
+        {document.status === "success" && (
+          <Link
+            className="document-review-link"
+            href={`/workspace/documents/${document.id}`}
+          >
+            Review extracted facts
+          </Link>
+        )}
       </Stack>
     </Flex>
   )

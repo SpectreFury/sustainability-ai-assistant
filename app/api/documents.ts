@@ -9,6 +9,72 @@ export type DocumentRecord = {
   upload_timestamp: string
 }
 
+export type ReviewLocator = {
+  page: number | null
+  sheet: string | null
+  cell_range: string | null
+}
+
+export type ReviewFact = {
+  id: string
+  key: string
+  label: string
+  original_label: string
+  category: string
+  metric: string | null
+  series: string | null
+  value_text: string
+  original_value_text: string
+  value_number: string | null
+  original_value_number: string | null
+  unit: string | null
+  period_start: string | null
+  period_end: string | null
+  note: string | null
+  origin: "reported" | "calculated"
+  locator: ReviewLocator
+  quote: string | null
+  verified: boolean
+  verification: string
+  derivation: string | null
+  edited: boolean
+}
+
+export type ReviewSegment = {
+  ordinal: number
+  locator: ReviewLocator
+  text: string
+  cells: Record<string, string | number> | null
+  scanned: boolean
+}
+
+export type DocumentReview = {
+  id: string
+  filename: string
+  status: "pending" | "processing" | "success" | "failed"
+  upload_timestamp: string
+  document_kind: string
+  organisation: string | null
+  title: string | null
+  issuer: string | null
+  period_start: string | null
+  period_end: string | null
+  page_count: number | null
+  summary: string | null
+  issues: string[]
+  reviewed_at: string | null
+  reviewed_by: string | null
+  file_url: string | null
+  facts: ReviewFact[]
+  segments: ReviewSegment[]
+}
+
+export type ReviewFactUpdate = {
+  id: string
+  label: string
+  value_text: string
+}
+
 type UploadSignature = {
   document_id: string
   upload_url: string
@@ -35,6 +101,48 @@ export async function getDocuments(): Promise<DocumentRecord[]> {
   })
   if (!response.ok) throw new Error("Unable to load documents.")
   return response.json()
+}
+
+async function reviewRequest(
+  path: string,
+  init?: RequestInit,
+): Promise<DocumentReview> {
+  if (!backendUrl) throw new Error("NEXT_PUBLIC_BACKEND_URL is not set.")
+
+  const response = await fetch(`${backendUrl}${path}`, {
+    credentials: "include",
+    ...init,
+  })
+  if (!response.ok) {
+    const result = await response.json().catch(() => null)
+    throw new Error(
+      typeof result?.detail === "string"
+        ? result.detail
+        : "Unable to load document review.",
+    )
+  }
+  return response.json()
+}
+
+export function getDocumentReview(documentId: string): Promise<DocumentReview> {
+  return reviewRequest(`/documents/${documentId}/review`)
+}
+
+export function saveDocumentReviewFacts(
+  documentId: string,
+  facts: ReviewFactUpdate[],
+): Promise<DocumentReview> {
+  return reviewRequest(`/documents/${documentId}/review`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ facts }),
+  })
+}
+
+export function markDocumentReviewed(documentId: string): Promise<DocumentReview> {
+  return reviewRequest(`/documents/${documentId}/review/mark-reviewed`, {
+    method: "POST",
+  })
 }
 
 export async function processDocuments(): Promise<DocumentRecord[]> {
