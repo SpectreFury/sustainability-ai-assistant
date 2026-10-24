@@ -1,7 +1,7 @@
 import calendar
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from uuid import UUID
@@ -54,6 +54,8 @@ class _Candidate:
     end: date
     treatment: str = "excluded"
     reason: str = ""
+    reconciled_treatment: str | None = None
+    reconciliation_reason: str | None = None
 
     @property
     def days(self) -> int:
@@ -174,14 +176,183 @@ def _month_label(month: int) -> str:
 
 
 def _series_key(fact: ExtractedFact) -> str:
-    return (fact.series or "").strip().casefold()
+    text = " ".join(
+        part
+        for part in (fact.series or "", _effective_label(fact), fact.key)
+        if part
+    ).casefold().replace("_", " ")
+    text = re.sub(r"\b(?:kwh|kvah|vah|m3|m³|kl|kg|tonnes?)\b", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+    if fact.metric == "electricity":
+        if re.search(r"\bgrid\b", text):
+            return "grid_supply"
+        if re.search(r"\bsolar\b", text):
+            return "solar"
+        if re.search(r"\bwind\b", text):
+            return "wind"
+        if re.search(r"\brenewable\b", text):
+            return "renewable"
+        if re.search(r"\bnet\s+consumption\b", text):
+            return "net_consumption"
+        if re.search(r"\bunits?\s+consumed\b", text):
+            return "units_consumed"
+        if re.search(r"\btotal\s+(?:electricity\s+)?consumption\b", text):
+            return "total_consumption"
+        if re.search(r"\bconsumption\s+total\b", text):
+            return "total_consumption"
+
+        generic_name = (fact.series or fact.label or fact.key or "").casefold().replace("_", " ")
+        generic_name = re.sub(r"\b(?:kwh|kvah|vah|m3|m³|kl|kg|tonnes?)\b", " ", generic_name)
+        generic_name = re.sub(r"\b(?:annual|yearly|quarterly|monthly|q[1-4]|20\d{2})\b", " ", generic_name)
+        generic_name = re.sub(r"[^a-z0-9]+", " ", generic_name).strip()
+        if generic_name == "total":
+            return "total_consumption"
+
+    series = (fact.series or fact.key or fact.label or "").casefold().replace("_", " ")
+    series = re.sub(r"\b(?:kwh|kvah|vah|m3|m³|kl|kg|tonnes?)\b", " ", series)
+    series = re.sub(r"[^a-z0-9]+", " ", series).strip()
+    return series
 
 
-def _is_annual_total(candidate: _Candidate, fy_start: date, fy_end: date) -> bool:
-    if candidate.start != fy_start or candidate.end != fy_end:
+def _candidate_column(candidate: _Candidate) -> tuple[str, str] | None:
+    locator = _locator(candidate.fact)
+    sheet = locator.get("sheet")
+    cell_range = locator.get("cell_range")
+    if not sheet or not cell_range:
+        return None
+    match = re.search(r"\$?([A-Z]{1,3})\$?\d+", str(cell_range), re.I)
+    if not match:
+        return None
+    return str(sheet).strip().casefold(), match.group(1).upper()
+
+
+def _same_series(left: _Candidate, right: _Candidate) -> bool:
+    if left.document.id != right.document.id or left.metric != right.metric:
         return False
-    text = f"{candidate.fact.key} {candidate.fact.label} {candidate.fact.series or ''}".casefold().replace("_", " ")
-    return bool(re.search(r"\b(total|subtotal|annual|yearly|summary)\b", text))
+    if re.sub(r"[\s.]", "", left.unit.casefold()) != re.sub(r"[\s.]", "", right.unit.casefold()):
+        return False
+    left_key = _series_key(left.fact)
+    right_key = _series_key(right.fact)
+    if left_key and right_key and left_key == right_key:
+        return True
+    same_column = _candidate_column(left) is not None and _candidate_column(left) == _candidate_column(right)
+    generic_series = re.compile(r"^(?:(?:annual|yearly|quarterly|monthly)\s+)?(?:sub)?total$|^(?:(?:annual|yearly|quarterly|monthly)\s+)?summary$")
+    left_series = re.sub(r"\s+", " ", (left.fact.series or "").casefold().strip())
+    right_series = re.sub(r"\s+", " ", (right.fact.series or "").casefold().strip())
+    return same_column and (
+        not left_series
+        or not right_series
+        or bool(generic_series.fullmatch(left_series))
+        or bool(generic_series.fullmatch(right_series))
+    )
+
+
+def _candidate_location(candidate: _Candidate) -> str:
+    locator = _locator(candidate.fact)
+    if locator.get("sheet"):
+        return f"{locator['sheet']}!{locator.get('cell_range') or 'location unavailable'}"
+    if locator.get("page") is not None:
+        return f"p.{locator['page']}"
+    return "source location unavailable"
+
+
+def _detail_locations(candidates: list[_Candidate]) -> str:
+    locators = [_locator(candidate.fact) for candidate in candidates]
+    sheets = {str(locator.get("sheet") or "") for locator in locators}
+    cells = [str(locator.get("cell_range") or "") for locator in locators]
+    parsed = [re.fullmatch(r"\$?([A-Z]{1,3})\$?(\d+)", cell, re.I) for cell in cells]
+    if locators and len(sheets) == 1 and all(parsed):
+        columns = {match.group(1).upper() for match in parsed if match}
+        rows = sorted({int(match.group(2)) for match in parsed if match})
+        if len(columns) == 1 and len(rows) == len(candidates) and rows == list(range(rows[0], rows[-1] + 1)):
+            column = next(iter(columns))
+            sheet = next(iter(sheets))
+            return f"{sheet}!{column}{rows[0]}:{column}{rows[-1]}"
+    locations = list(dict.fromkeys(_candidate_location(candidate) for candidate in candidates))
+    return ", ".join(locations[:4]) + (f", and {len(locations) - 4} more" if len(locations) > 4 else "")
+
+
+def _detail_partition(parent: _Candidate, candidates: list[_Candidate]) -> list[_Candidate] | None:
+    by_period: dict[tuple[date, date], list[_Candidate]] = {}
+    for candidate in candidates:
+        if (
+            candidate.fact.id == parent.fact.id
+            or not _same_series(parent, candidate)
+            or candidate.days >= parent.days
+            or candidate.start < parent.start
+            or candidate.end > parent.end
+        ):
+            continue
+        by_period.setdefault((candidate.start, candidate.end), []).append(candidate)
+
+    # Identical periods are corroborating copies; conflicting copies cannot
+    # safely be used to reconcile a coarser reported figure.
+    periods: list[_Candidate] = []
+    for period_candidates in by_period.values():
+        if len({candidate.value for candidate in period_candidates}) != 1:
+            continue
+        periods.append(min(period_candidates, key=_source_preference))
+    by_start: dict[date, list[_Candidate]] = {}
+    for candidate in periods:
+        by_start.setdefault(candidate.start, []).append(candidate)
+    for choices in by_start.values():
+        choices.sort(key=lambda candidate: (candidate.days, candidate.end))
+
+    memo: dict[date, list[_Candidate] | None] = {}
+
+    def find_partition(cursor: date) -> list[_Candidate] | None:
+        if cursor in memo:
+            return memo[cursor]
+        choices = by_start.get(cursor, [])
+        for candidate in choices:
+            if candidate.end == parent.end:
+                memo[cursor] = [candidate]
+                return memo[cursor]
+            if candidate.end < parent.end:
+                following = find_partition(candidate.end + timedelta(days=1))
+                if following is not None:
+                    memo[cursor] = [candidate, *following]
+                    return memo[cursor]
+        memo[cursor] = None
+        return None
+
+    partition = find_partition(parent.start)
+    return partition if partition and len(partition) > 1 else None
+
+
+def _reconcile_reported_summaries(candidates: list[_Candidate]) -> list[str]:
+    issues: list[str] = []
+    for parent in candidates:
+        details = _detail_partition(parent, candidates)
+        if not details:
+            continue
+        detail_total = sum((candidate.value for candidate in details), Decimal("0"))
+        detail_location = _detail_locations(details)
+        parent_location = _candidate_location(parent)
+        series = parent.fact.series or _effective_label(parent.fact) or parent.fact.key
+        period = f"{parent.start.isoformat()} to {parent.end.isoformat()}"
+        if detail_total == parent.value:
+            parent.reconciled_treatment = "corroboration"
+            parent.reconciliation_reason = "The reported summary matches its detailed entries and was not counted twice."
+            parent.treatment = parent.reconciled_treatment
+            parent.reason = parent.reconciliation_reason
+            continue
+
+        parent.reconciled_treatment = "excluded"
+        parent.reconciliation_reason = (
+            f"Reported summary {_decimal_text(parent.value)} {parent.unit} differs from the "
+            f"detailed sum {_decimal_text(detail_total)} {parent.unit}; review both figures."
+        )
+        parent.treatment = parent.reconciled_treatment
+        parent.reason = parent.reconciliation_reason
+        issues.append(
+            f"{parent.document.filename}: {series} at {parent_location} reports "
+            f"{_decimal_text(parent.value)} {parent.unit} for {period}, while the "
+            f"non-overlapping detailed entries at {detail_location} sum to "
+            f"{_decimal_text(detail_total)} {parent.unit}. The source figures disagree."
+        )
+    return issues
 
 
 def _source_preference(candidate: _Candidate) -> tuple[int, int, datetime, str]:
@@ -234,13 +405,19 @@ def _source(candidate: _Candidate) -> FinancialYearSource:
     )
 
 
-def _classify_candidates(candidates: list[_Candidate], fy_start: date, fy_end: date) -> tuple[list[_Candidate], list[_Candidate], list[str]]:
+def _classify_candidates(
+    candidates: list[_Candidate], fy_start: date, fy_end: date
+) -> tuple[list[_Candidate], list[_Candidate], list[str]]:
     gaps: list[str] = []
     in_scope: list[_Candidate] = []
     for candidate in candidates:
         if candidate.start < fy_start or candidate.end > fy_end:
             candidate.treatment = "excluded"
-            candidate.reason = "The reported period extends beyond this financial year and cannot be split from the source."
+            candidate.reason = (
+                candidate.reconciliation_reason
+                if candidate.reconciliation_reason
+                else "The reported period extends beyond this financial year and cannot be split from the source."
+            )
             gaps.append(
                 f"{candidate.document.filename} covers dates outside the selected financial year; "
                 "the value was not prorated."
@@ -277,6 +454,10 @@ def _classify_candidates(candidates: list[_Candidate], fy_start: date, fy_end: d
         if candidate.fact.id in conflicting_ids:
             candidate.treatment = "excluded"
             candidate.reason = "Conflicting reported values exist for this exact period; a source was not selected."
+            continue
+        if candidate.reconciled_treatment:
+            candidate.treatment = candidate.reconciled_treatment
+            candidate.reason = candidate.reconciliation_reason or "Reported summary checked against detailed entries."
             continue
         overlap = next((item for item in accepted if _overlaps(candidate, item)), None)
         if overlap is None:
@@ -604,6 +785,7 @@ async def get_financial_year_summary(
 
     candidates_by_group: dict[tuple[str, str, str], list[_Candidate]] = {}
     candidate_by_fact_id: dict[UUID, _Candidate] = {}
+    reconciliation_candidates: list[_Candidate] = []
     source_records: list[FinancialYearSource] = []
     gaps: list[str] = []
     excluded_docs: list[FinancialYearExcludedDocument] = []
@@ -688,19 +870,22 @@ async def get_financial_year_summary(
                 if start is None or start <= fy_end and (end is None or end >= fy_start):
                     gaps.append(f"{document.filename} has a {fact.metric} value without a clear period and it was not included.")
                 continue
-            if end < fy_start or start > fy_end:
-                continue
-            doc_has_relevant_source = True
+            outside_financial_year = end < fy_start or start > fy_end
+            if not outside_financial_year:
+                doc_has_relevant_source = True
             unit = (fact.unit or "").strip()
             value = _effective_value(fact)
             if not unit:
-                gaps.append(f"{document.filename} reports {fact.metric} without a unit; that value was not combined.")
+                if not outside_financial_year:
+                    gaps.append(f"{document.filename} reports {fact.metric} without a unit; that value was not combined.")
                 continue
             if "/" in unit or re.search(r"\bper\b", unit.casefold()):
-                gaps.append(f"{document.filename} reports {fact.metric} in a rate or intensity unit ({unit}); it was not totalled.")
+                if not outside_financial_year:
+                    gaps.append(f"{document.filename} reports {fact.metric} in a rate or intensity unit ({unit}); it was not totalled.")
                 continue
             if value is None:
-                gaps.append(f"{document.filename} reports {fact.metric} without a usable numeric value; it was not included.")
+                if not outside_financial_year:
+                    gaps.append(f"{document.filename} reports {fact.metric} without a usable numeric value; it was not included.")
                 continue
             candidate = _Candidate(
                 document=document,
@@ -711,6 +896,9 @@ async def get_financial_year_summary(
                 start=start,
                 end=end,
             )
+            reconciliation_candidates.append(candidate)
+            if outside_financial_year:
+                continue
             candidates_by_group.setdefault((fact.metric, unit, _series_key(fact)), []).append(candidate)
             candidate_by_fact_id[fact.id] = candidate
 
@@ -723,6 +911,21 @@ async def get_financial_year_summary(
                     status=document.status,
                     reason="No usable physical quantity facts cover this financial year.",
                 )
+            )
+
+    reconciliation_gaps = _reconcile_reported_summaries(reconciliation_candidates)
+    for candidate in reconciliation_candidates:
+        crosses_boundary = candidate.start < fy_start or candidate.end > fy_end
+        overlaps_year = candidate.start <= fy_end and candidate.end >= fy_start
+        if candidate.reconciled_treatment and crosses_boundary and overlaps_year:
+            candidate.treatment = "excluded"
+            candidate.reason = (
+                f"{candidate.reconciliation_reason} Its reported period extends beyond this "
+                "financial year, so it was not included."
+            )
+            gaps.append(
+                f"{candidate.document.filename} covers dates outside the selected financial year; "
+                "the value was not prorated."
             )
 
     candidates_by_resource: dict[tuple[str, str], list[_Candidate]] = {}
@@ -738,22 +941,6 @@ async def get_financial_year_summary(
                 str(item.fact.id),
             )
         )
-        annual_totals = [
-            candidate for candidate in resource_candidates
-            if _is_annual_total(candidate, fy_start, fy_end)
-            and any(
-                other.document.id == candidate.document.id
-                and other.fact.id != candidate.fact.id
-                and fy_start <= other.start
-                and other.end <= fy_end
-                and other.days < candidate.days
-                and _overlaps(other, candidate)
-                for other in resource_candidates
-            )
-        ]
-        for candidate in annual_totals:
-            candidate.treatment = "excluded"
-            candidate.reason = "Full-year total overlaps more detailed records from the same source; it is not added twice."
         seen: list[_Candidate] = []
         for candidate in resource_candidates:
             if candidate.treatment == "excluded" and candidate.reason:
@@ -821,30 +1008,7 @@ async def get_financial_year_summary(
                 note = f"Billed value retained. {meter_gaps[0]}"
                 metric_summary.note = f"{metric_summary.note} {note}".strip() if metric_summary.note else note
 
-    for annual in candidate_by_fact_id.values():
-        if annual.treatment != "excluded" or not _is_annual_total(annual, fy_start, fy_end):
-            continue
-        detailed = [
-            item for item in candidate_by_fact_id.values()
-            if item.document.id == annual.document.id
-            and item.metric == annual.metric
-            and item.unit == annual.unit
-            and item.fact.id != annual.fact.id
-            and item.days < annual.days
-            and item.treatment == "primary"
-        ]
-        if not detailed:
-            continue
-        detailed_total = sum((item.value for item in detailed), Decimal("0"))
-        if detailed_total == annual.value:
-            annual.treatment = "corroboration"
-            annual.reason = "The full-year total matches detailed source records; it is not added twice."
-        else:
-            gaps.append(
-                f"{annual.document.filename} reports {_decimal_text(annual.value)} {annual.unit} for the full financial year, "
-                f"while its included detailed records sum to {_decimal_text(detailed_total)} {annual.unit}; "
-                "the full-year figure was excluded because the periods overlap."
-            )
+    gaps.extend(reconciliation_gaps)
 
     for candidate in candidate_by_fact_id.values():
         source_records.append(_source(candidate))

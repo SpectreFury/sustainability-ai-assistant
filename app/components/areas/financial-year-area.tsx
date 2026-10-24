@@ -21,11 +21,11 @@ import {
 
 function formatNumber(value: string | null) {
   if (value === null || value === "") return ""
-  const match = /^([+-]?)(\d+)(\.\d+)?$/.exec(value.replaceAll(",", ""))
+  const match = /^([+-]?)(\d+)(\.\d+)?$/.exec(value.trim().replaceAll(",", ""))
   if (!match) return value
   const integer = match[2].replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-  const fraction = match[3]?.replace(/0+$/, "") ?? ""
-  return `${match[1]}${integer}${fraction}`
+  const fraction = match[3]?.slice(1).replace(/0+$/, "") ?? ""
+  return `${match[1]}${integer}${fraction ? `.${fraction}` : ""}`
 }
 
 function dateLabel(value: string) {
@@ -57,17 +57,42 @@ function cardNote(metric: FinancialYearMetric) {
   return appendNote(`${metric.method} · ${metric.months_covered} of 12 months covered`)
 }
 
+function headlineRank(metric: FinancialYearMetric) {
+  const name = `${metric.series ?? ""} ${metric.label}`
+    .normalize("NFKC")
+    .replace(/[_-]+/g, " ")
+    .toLowerCase()
+  if (/\btotal\s+(?:electricity\s+)?consumption\b|\bconsumption\s+total\b/.test(name)) return 5
+  if (/\bunits?\s+consumed\b/.test(name)) return 4
+  if (/\bnet\s+consumption\b/.test(name)) return 3
+  if (/^\s*consumption\b/.test(name)) return 2
+  return 0
+}
+
 function headlineMetrics(metrics: FinancialYearMetric[]) {
   const selected: FinancialYearMetric[] = []
   const coreResources = ["electricity", "water", "waste"]
 
   for (const resource of coreResources) {
     const groups = metrics.filter((metric) => metric.metric === resource)
-    const totalConsumption = groups.filter((metric) =>
-      /\btotal\s+(?:electricity\s+)?consumption\b/i.test(metric.series ?? ""),
-    )
-    if (totalConsumption.length === 1) selected.push(totalConsumption[0])
-    else selected.push(...groups)
+    const byUnit = new Map<string, FinancialYearMetric[]>()
+    for (const group of groups) {
+      const unit = (group.unit ?? "").trim().toLowerCase()
+      byUnit.set(unit, [...(byUnit.get(unit) ?? []), group])
+    }
+
+    for (const unitGroups of byUnit.values()) {
+      const preferred = unitGroups
+        .filter((metric) => metric.value !== null || metric.status === "conflict")
+        .map((metric) => ({ metric, rank: headlineRank(metric) }))
+        .filter(({ rank }) => rank > 0)
+      if (preferred.length === 0) {
+        selected.push(...unitGroups)
+        continue
+      }
+      const bestRank = Math.max(...preferred.map(({ rank }) => rank))
+      selected.push(...preferred.filter(({ rank }) => rank === bestRank).map(({ metric }) => metric))
+    }
   }
 
   selected.push(
@@ -185,11 +210,6 @@ function MetricCard({
           : <>{formatNumber(metric.value)}{metric.unit ? ` ${metric.unit}` : ""}</>}
       </strong>
       <span>{cardNote(metric)}</span>
-      {metric.calculation && (
-        <code className="fy-kpi-calculation">
-          {metric.calculation.replace(/(?<![\w.])\d+(?:\.\d+)?(?![\w.])/g, (value) => formatNumber(value))}
-        </code>
-      )}
     </article>
   )
 }

@@ -3372,16 +3372,6 @@ input:focus-visible {
   line-height: 1.5;
 }
 
-.fy-kpi-calculation {
-  display: block;
-  margin-top: 8px;
-  overflow-wrap: anywhere;
-  color: #5d6c62;
-  font-family: var(--font-mono), monospace;
-  font-size: 9px;
-  line-height: 1.5;
-}
-
 .fy-panel {
   margin-bottom: 24px;
   padding: 22px 21px 19px;
