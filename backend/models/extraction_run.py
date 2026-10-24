@@ -32,6 +32,7 @@ class ExtractionRun(Base):
             name="uq_extraction_runs_document_attempt",
         ),
         Index("ix_extraction_runs_document_started", "document_id", "started_at"),
+        Index("ix_extraction_runs_recovery", "status", "lease_expires_at"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -52,6 +53,9 @@ class ExtractionRun(Base):
     model_name: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text)
     result_metadata: Mapped[dict | None] = mapped_column(JSONB)
+    lease_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

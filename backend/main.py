@@ -1,6 +1,3 @@
-import os
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers.answers import router as answers_router
@@ -9,23 +6,7 @@ from routers.documents import router as documents_router
 from routers.financial_year import router as financial_year_router
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    task_broker = None
-    if os.getenv("REDIS_URL"):
-        from broker import broker
-
-        task_broker = broker
-        await task_broker.startup()
-
-    try:
-        yield
-    finally:
-        if task_broker is not None:
-            await task_broker.shutdown()
-
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,

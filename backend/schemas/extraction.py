@@ -65,24 +65,44 @@ class FactOut(BaseModel):
     key: str = Field(description="Stable snake_case identifier for this fact")
     label: str = Field(description="Short human-readable label grounded in the document")
     category: FactCategory
-    metric: Metric | None = Field(description="What the value measures, when applicable")
-    series: str | None = Field(description="Shared name for repeated values in a series")
+    metric: Metric | None = Field(
+        default=None, description="What the value measures, when applicable"
+    )
+    series: str | None = Field(
+        default=None, description="Shared name for repeated values in a series"
+    )
     value_text: str = Field(description="Value as written in the source, including unit/currency")
-    value_number: float | None = Field(description="Numeric value without separators, if numeric")
-    unit: str | None = Field(description="Unit or currency as printed or explicitly assumed")
-    period_start: str | None = Field(description="ISO date at the start of the covered period")
-    period_end: str | None = Field(description="ISO date at the end of the covered period")
-    note: str | None = Field(description="Qualifiers, assumptions, or ambiguity")
+    value_number: float | None = Field(
+        default=None, description="Numeric value without separators, if numeric"
+    )
+    unit: str | None = Field(
+        default=None, description="Unit or currency as printed or explicitly assumed"
+    )
+    period_start: str | None = Field(
+        default=None, description="ISO date at the start of the covered period"
+    )
+    period_end: str | None = Field(
+        default=None, description="ISO date at the end of the covered period"
+    )
+    note: str | None = Field(default=None, description="Qualifiers, assumptions, or ambiguity")
     source: SourceOut
 
 
 class ExtractionOut(BaseModel):
     doc_type: DocType
     title: str = Field(description="What the document is, in a few words")
-    organisation: str | None = Field(description="The customer/reporting organisation, if stated")
-    issuer: str | None = Field(description="The issuing utility or authority, if stated")
-    period_start: str | None = Field(description="ISO start date of the main period covered")
-    period_end: str | None = Field(description="ISO end date of the main period covered")
+    organisation: str | None = Field(
+        default=None, description="The customer/reporting organisation, if stated"
+    )
+    issuer: str | None = Field(
+        default=None, description="The issuing utility or authority, if stated"
+    )
+    period_start: str | None = Field(
+        default=None, description="ISO start date of the main period covered"
+    )
+    period_end: str | None = Field(
+        default=None, description="ISO end date of the main period covered"
+    )
     summary: str = Field(description="Two-sentence summary of the document contents")
     facts: list[FactOut]
     issues: list[str] = Field(description="Contradictions, missing values, or ambiguities to review")

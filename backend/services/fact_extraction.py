@@ -1,6 +1,7 @@
 """Model-led fact extraction with source segments and source verification."""
 
 import hashlib
+import logging
 import os
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -23,6 +24,7 @@ from services.text_sanitization import sanitize_text
 _PROMPT_VERSION = "benchmark-facts-v1"
 _DEFAULT_MODEL = "gemini-3.5-flash-lite"
 _MAX_OUTPUT_TOKENS = 32_000
+logger = logging.getLogger(__name__)
 
 
 async def extract_document_facts(
@@ -299,7 +301,6 @@ async def _invoke_model(
                 model = ChatGoogleGenerativeAI(
                     model=model_name,
                     google_api_key=api_key,
-                    temperature=0,
                     max_output_tokens=_MAX_OUTPUT_TOKENS,
                 ).with_structured_output(ExtractionOut, include_raw=True)
                 raw_result = await model.ainvoke(
@@ -311,7 +312,29 @@ async def _invoke_model(
                 if isinstance(raw_result, dict) and "parsed" in raw_result:
                     parsing_error = raw_result.get("parsing_error")
                     if parsing_error is not None:
-                        raise ValueError("Gemini returned an invalid structured extraction.")
+                        raw_message = raw_result.get("raw")
+                        response_metadata = getattr(
+                            raw_message, "response_metadata", {}
+                        )
+                        finish_reason = (
+                            response_metadata.get("finish_reason")
+                            if isinstance(response_metadata, dict)
+                            else None
+                        )
+                        validation_summary = _safe_validation_summary(parsing_error)
+                        logger.warning(
+                            "Gemini structured extraction failed validation "
+                            "(error_type=%s, finish_reason=%s, fields=%s)",
+                            type(parsing_error).__name__,
+                            finish_reason or "unknown",
+                            validation_summary,
+                        )
+                        # A malformed model response can be transient. Pass it to
+                        # the durable worker retry policy without logging the raw
+                        # response, which may contain document content.
+                        raise TemporaryExtractionError(
+                            "Gemini returned an invalid structured extraction."
+                        ) from None
                     extraction = ExtractionOut.model_validate(raw_result.get("parsed"))
                     raw_message = raw_result.get("raw")
                 else:
@@ -360,6 +383,29 @@ def _trace_error(trace: Any, generation: Any, error: Exception) -> None:
     }
     update_observation(generation, **attributes)
     update_observation(trace, **attributes)
+
+
+def _safe_validation_summary(error: Exception) -> str:
+    """Report schema paths and error types without model output or source values."""
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        validation_errors = getattr(current, "errors", None)
+        if callable(validation_errors):
+            try:
+                entries = validation_errors(include_input=False)
+            except TypeError:
+                entries = validation_errors()
+            summaries = []
+            for entry in entries[:8]:
+                location = ".".join(str(part) for part in entry.get("loc", ()))
+                error_type = str(entry.get("type", "validation_error"))
+                summaries.append(f"{location or '<root>'}:{error_type}")
+            if summaries:
+                return ", ".join(summaries)
+        current = current.__cause__ or current.__context__
+    return type(error).__name__
 
 
 def _is_retryable_model_error(error: Exception) -> bool:

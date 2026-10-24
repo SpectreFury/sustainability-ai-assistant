@@ -10,13 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Document, ExtractionRun
+from models import Document
 from schemas.documents import (
     DocumentResponse,
     UploadCompleteRequest,
     UploadSignatureRequest,
     UploadSignatureResponse,
 )
+from services.extraction_queue import add_extraction_attempt
 from utils.cloudinary import configure_cloudinary
 
 
@@ -59,6 +60,7 @@ async def create_upload_signature(
         document.cloudinary_public_id = public_id
         document.status = "pending"
         document.error_message = None
+        document.retry_count = 0
         document.upload_timestamp = datetime.now(UTC)
 
     try:
@@ -169,7 +171,6 @@ async def queue_pending_documents(
     if not documents:
         return []
 
-    queueable: list[tuple[Document, ExtractionRun]] = []
     for document in documents:
         if not document.cloudinary_url:
             document.status = "failed"
@@ -185,62 +186,12 @@ async def queue_pending_documents(
                 "Unsupported file type. Only .xlsx and .pdf are supported."
             )
             continue
-        run = ExtractionRun(
-            document_id=document.id,
-            attempt_number=document.attempt_count + 1,
-            status="queued",
-            extraction_version="benchmark-facts-v1",
-        )
-        document.attempt_count = run.attempt_number
-        document.status = "processing"
-        document.error_message = None
-        document.processing_started_at = None
-        session.add(run)
-        queueable.append((document, run))
+        document.retry_count = 0
+        await add_extraction_attempt(session, document)
 
-    if not queueable:
-        await session.commit()
-        return documents
-
-    try:
-        from workers.extraction import process_document
-    except RuntimeError as error:
-        await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Document processing is unavailable. Configure REDIS_URL and "
-                "start the worker."
-            ),
-        ) from error
-
+    # The run and its outbox record commit together. A separate dispatcher
+    # publishes it to Redis and retries publication until a worker claims it.
     await session.commit()
-
-    queue_failures = 0
-    for document, run in queueable:
-        try:
-            await process_document.kiq(str(run.id))
-        except Exception:
-            queue_failures += 1
-            run.status = "failed"
-            run.error_message = "Could not submit this job to the worker queue."
-            run.completed_at = datetime.now(UTC)
-            document.status = "pending"
-            document.error_message = (
-                "Could not submit this job to the worker queue. Please try again."
-            )
-            document.processing_started_at = None
-            await session.commit()
-        await session.refresh(document)
-
-    queueable_documents = {document.id for document, _ in queueable}
     for document in documents:
-        if document.id not in queueable_documents:
-            await session.refresh(document)
-
-    if queue_failures == len(queueable):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not submit processing jobs. Check Redis and try again.",
-        )
+        await session.refresh(document)
     return documents
