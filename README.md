@@ -44,15 +44,19 @@ make dev
 
 Run this as your normal repository user, without `sudo`.
 
-### What startup does
+## Architecture
 
-The launcher syncs backend dependencies, installs frontend dependencies when
-needed, starts local Postgres and Redis with Docker Compose, applies database
-migrations, then starts the API, extraction worker, and frontend together. Use
-the root `.env` file for the credentials and service settings the launcher
-requires; local Postgres and Redis are started with Compose.
+### Upload Flow
+<img width="1670" height="987" alt="image" src="https://github.com/user-attachments/assets/20901716-217f-4b3a-8a68-c2e35c13f35a" />
 
-This is just for the reviewer's ease of use and nothing more.
+### Process Flow
+<img width="2050" height="1364" alt="image" src="https://github.com/user-attachments/assets/0369f267-0b21-478a-9a5f-18831fa5bc15" />
+
+### Answer Flow
+<img width="1840" height="1260" alt="image" src="https://github.com/user-attachments/assets/363e17cf-1fdf-4b51-b190-c185bf925b73" />
+
+
+
 
 ## Evaluation cases and saved results
 
