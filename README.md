@@ -112,6 +112,8 @@ I was severely hindered by the model quality, we constant hit rate limit with th
 
 ## Images 
 
+- (Figma)[https://www.figma.com/design/IMcBx55NlhcK0LrtkusSGi/Untitled?node-id=0-1&t=24pyZ0lN1Qne6RbZ-1]
+
 <img width="1919" height="957" alt="image" src="https://github.com/user-attachments/assets/e3b79162-297e-40ed-8ffd-76414f2a1315" />
 <img width="1906" height="959" alt="image" src="https://github.com/user-attachments/assets/e7ca37a4-8fb0-4927-a848-23d0d06e7be5" />
 <img width="1919" height="957" alt="image" src="https://github.com/user-attachments/assets/a52c58a6-b94e-4690-adfd-d8e43b42e780" />
