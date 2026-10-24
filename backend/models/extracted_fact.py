@@ -59,6 +59,21 @@ class ExtractedFact(Base):
     verified: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
     verification: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     derivation: Mapped[str | None] = mapped_column(Text)
+    reviewed_label: Mapped[str | None] = mapped_column(Text)
+    reviewed_value_text: Mapped[str | None] = mapped_column(Text)
+    reviewed_value_number: Mapped[Decimal | None] = mapped_column(
+        Numeric(38, 12, asdecimal=True)
+    )
+    reviewed_verified: Mapped[bool | None] = mapped_column()
+    reviewed_verification: Mapped[str | None] = mapped_column(Text)
+    edited_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_facts_edited_by_user_id_users",
+        )
+    )
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

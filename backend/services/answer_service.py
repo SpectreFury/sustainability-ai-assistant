@@ -417,15 +417,28 @@ def _date_text(value: object) -> str | None:
 
 
 def _fact_for_context(fact: ExtractedFact) -> dict:
+    has_review = (
+        fact.reviewed_label is not None or fact.reviewed_value_text is not None
+    )
+    value_text = (
+        fact.reviewed_value_text
+        if fact.reviewed_value_text is not None
+        else fact.value_text
+    )
+    value_number = (
+        fact.reviewed_value_number
+        if fact.reviewed_value_text is not None
+        else fact.value_number
+    )
     return {
         "key": fact.key,
-        "label": fact.label,
+        "label": fact.reviewed_label or fact.label,
         "category": fact.category,
         "metric": fact.metric,
         "series": fact.series,
-        "value_text": fact.value_text,
+        "value_text": value_text,
         "value_number": (
-            format(fact.value_number, "f") if fact.value_number is not None else None
+            format(value_number, "f") if value_number is not None else None
         ),
         "unit": fact.unit,
         "period_start": _date_text(fact.period_start),
@@ -434,8 +447,16 @@ def _fact_for_context(fact: ExtractedFact) -> dict:
         "origin": fact.origin,
         "locator": fact.locator,
         "quote": fact.quote,
-        "verified": fact.verified,
-        "verification": fact.verification,
+        "verified": (
+            fact.reviewed_verified
+            if has_review and fact.reviewed_verified is not None
+            else fact.verified
+        ),
+        "verification": (
+            fact.reviewed_verification or fact.verification
+            if has_review
+            else fact.verification
+        ),
         "derivation": fact.derivation,
     }
 

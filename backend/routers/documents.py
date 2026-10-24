@@ -15,12 +15,18 @@ from schemas.documents import (
     UploadSignatureRequest,
     UploadSignatureResponse,
 )
+from schemas.review import DocumentReviewResponse, ReviewFactsUpdateRequest
 from services.document_service import (
     complete_document_upload,
     create_upload_signature,
     fail_document_upload,
     list_user_documents,
     queue_pending_documents,
+)
+from services.review_service import (
+    get_document_review,
+    mark_document_reviewed,
+    save_document_review_facts,
 )
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -83,3 +89,36 @@ async def list_documents(
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[DocumentResponse]:
     return await list_user_documents(session, user.id)
+
+
+@router.get("/{document_id}/review", response_model=DocumentReviewResponse)
+async def review_document(
+    document_id: UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> DocumentReviewResponse:
+    return await get_document_review(session, user.id, document_id)
+
+
+@router.patch("/{document_id}/review", response_model=DocumentReviewResponse)
+async def save_review_facts(
+    document_id: UUID,
+    payload: ReviewFactsUpdateRequest,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> DocumentReviewResponse:
+    return await save_document_review_facts(
+        session, user.id, document_id, payload
+    )
+
+
+@router.post(
+    "/{document_id}/review/mark-reviewed",
+    response_model=DocumentReviewResponse,
+)
+async def complete_document_review(
+    document_id: UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> DocumentReviewResponse:
+    return await mark_document_reviewed(session, user.id, document_id)
