@@ -44,27 +44,6 @@ make dev
 
 Run this as your normal repository user, without `sudo`.
 
-### Docker (Windows, Mac, and Linux)
-
-Install Docker Desktop or Docker Engine with Compose v2. From the repository
-folder, run the stack defined in [compose.yaml](compose.yaml):
-
-```sh
-docker compose up --build
-```
-
-This builds and starts the frontend, API, extraction worker, database, Redis,
-and database migrations. It uses the root `.env` file and needs ports 3000,
-5432, 6379, and 8000 available. Open `http://localhost:3000`; Compose shows
-logs for each service in the terminal. Press Ctrl+C to stop the services while
-keeping the database and Redis volumes. To stop and remove the containers later,
-run `docker compose down` from the repository folder.
-
-The Docker option does not require Node.js, `uv`, or Make on the host. The first
-build downloads the base images and application dependencies; later builds reuse
-the Docker cache. Source files are copied into the images, so rerun
-`docker compose up --build` after changing code.
-
 ### What startup does
 
 The launcher syncs backend dependencies, installs frontend dependencies when

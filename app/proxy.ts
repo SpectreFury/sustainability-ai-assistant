@@ -15,8 +15,7 @@ export async function proxy(request: NextRequest) {
   }
 
   if (refreshToken) {
-    const backendUrl =
-      process.env.INTERNAL_BACKEND_URL ?? process.env.NEXT_PUBLIC_BACKEND_URL
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
     if (!backendUrl) throw new Error("NEXT_PUBLIC_BACKEND_URL is not set.")
 
     const refreshResponse = await fetch(`${backendUrl}/auth/refresh`, {
