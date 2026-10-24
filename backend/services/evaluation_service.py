@@ -226,6 +226,7 @@ def score_case(
     answer: AnswerContent,
     status: str,
     extraction_pass: bool,
+    extraction_diagnostics: list[str] | None = None,
 ) -> dict[str, Any]:
     answer_text = " ".join(
         [answer.answer]
@@ -241,36 +242,62 @@ def score_case(
     normalized_answer = _normalize(answer_text)
     numbers = _numbers(answer_text)
 
-    answer_pass = all(
-        _decimal_expected(item["value"]) in numbers
-        and _unit_present(str(item.get("unit", "")), answer)
-        for item in case.get("expected_numeric_values", [])
-    )
-    answer_pass = answer_pass and all(
-        any(_term_matches(normalized_answer, term) for term in group)
-        for group in case.get("expected_term_groups", [])
-    )
-    answer_pass = answer_pass and all(
-        _term_occurrences(normalized_answer, item["term"]) >= int(item["count"])
-        for item in case.get("expected_term_occurrences", [])
-    )
-    answer_pass = answer_pass and not any(
-        _decimal_expected(value) in numbers
-        for value in case.get("forbidden_numeric_values", [])
-    )
-    answer_pass = answer_pass and all(
-        any(
-            _answer_value_assertion_matches(item, expected)
-            and _answer_value_assertion_cited(item, expected, answer)
+    answer_diagnostics: list[str] = []
+    for expected in case.get("expected_numeric_values", []):
+        expected_number = _decimal_expected(expected["value"])
+        if expected_number not in numbers:
+            answer_diagnostics.append(
+                f"Expected value {expected['value']} is missing from the answer."
+            )
+        elif not _unit_present(str(expected.get("unit", "")), answer):
+            answer_diagnostics.append(
+                f"Expected value {expected['value']} is missing unit {expected['unit']}."
+            )
+    for group in case.get("expected_term_groups", []):
+        if not any(_term_matches(normalized_answer, term) for term in group):
+            answer_diagnostics.append(
+                "Answer is missing an expected phrase: " + " / ".join(group) + "."
+            )
+    for expected in case.get("expected_term_occurrences", []):
+        found = _term_occurrences(normalized_answer, expected["term"])
+        if found < int(expected["count"]):
+            answer_diagnostics.append(
+                f"Expected {expected['term']} at least {expected['count']} times; found {found}."
+            )
+    for value in case.get("forbidden_numeric_values", []):
+        if _decimal_expected(value) in numbers:
+            answer_diagnostics.append(
+                f"Forbidden value {value} appears in the answer."
+            )
+    for expected in case.get("expected_value_assertions", []):
+        matching_values = [
+            item
             for item in answer.key_values
-        )
-        for expected in case.get("expected_value_assertions", [])
-    )
+            if _answer_value_assertion_matches(item, expected)
+        ]
+        if not matching_values:
+            answer_diagnostics.append(
+                _expected_value_description(expected)
+                + " is missing or has a different label, unit, or value."
+            )
+        elif not any(
+            _answer_value_assertion_cited(item, expected, answer)
+            for item in matching_values
+        ):
+            answer_diagnostics.append(
+                _expected_value_description(expected)
+                + " is not linked to its expected source location."
+            )
+    answer_pass = not answer_diagnostics
 
-    evidence_pass = all(
-        any(_evidence_matches(item, expected) for item in answer.evidence)
-        for expected in case.get("expected_evidence", [])
-    )
+    evidence_diagnostics: list[str] = []
+    for expected in case.get("expected_evidence", []):
+        if not any(_evidence_matches(item, expected) for item in answer.evidence):
+            evidence_diagnostics.append(
+                "Expected evidence location was not cited: "
+                + _expected_location_description(expected)
+                + "."
+            )
     for expected in case.get("expected_numeric_values", []):
         expected_number = _decimal_expected(expected["value"])
         supported_value = any(
@@ -284,43 +311,91 @@ def score_case(
             )
             for item in answer.key_values
         )
-        evidence_pass = evidence_pass and supported_value
+        if not supported_value:
+            evidence_diagnostics.append(
+                f"Expected value {expected['value']} has no verified cited key figure."
+            )
+    evidence_pass = not evidence_diagnostics
 
     calculation = case.get("calculation")
+    calculation_diagnostics: list[str] = []
     if calculation:
-        calculation_pass = any(
-            item.matches
-            and item.result is not None
-            and _decimal_expected(item.result) == _decimal_expected(calculation["result"])
-            and _unit_present(str(calculation.get("unit", "")), answer, item.unit)
-            and all(
-                _decimal_expected(operand) in _numbers(item.expression)
+        per_calculation_failures: list[list[str]] = []
+        for item in answer.calculations:
+            failures: list[str] = []
+            if not item.matches:
+                failures.append("the server-recomputed result does not match")
+            if (
+                item.result is None
+                or _decimal_expected(item.result)
+                != _decimal_expected(calculation["result"])
+            ):
+                failures.append(
+                    f"the reported result is not {calculation['result']}"
+                )
+            if not _unit_text_present(
+                str(calculation.get("unit", "")), str(item.unit or "")
+            ):
+                failures.append(f"the expected unit {calculation['unit']} is missing")
+            missing_operands = [
+                operand
                 for operand in calculation.get("operands", [])
-            )
-            and (
-                not calculation.get("operator")
-                or calculation["operator"] in item.expression
-            )
-            and all(
-                any(
+                if _decimal_expected(operand) not in _numbers(item.expression)
+            ]
+            if missing_operands:
+                failures.append(
+                    "the expression is missing operand(s) "
+                    + ", ".join(missing_operands)
+                )
+            if calculation.get("operator") and calculation["operator"] not in item.expression:
+                failures.append(
+                    f"the expression is missing operator {calculation['operator']}"
+                )
+            missing_sources = [
+                _expected_location_description(expected)
+                for expected in calculation.get("expected_evidence", [])
+                if not any(
                     evidence.id in item.evidence_ids
                     and _evidence_matches(evidence, expected)
                     for evidence in answer.evidence
                 )
-                for expected in calculation.get("expected_evidence", [])
+            ]
+            if missing_sources:
+                failures.append(
+                    "the calculation does not cite " + "; ".join(missing_sources)
+                )
+            per_calculation_failures.append(failures)
+
+        calculation_pass = any(not failures for failures in per_calculation_failures)
+        if not answer.calculations:
+            calculation_diagnostics.append("No calculation was returned.")
+        elif not calculation_pass:
+            calculation_diagnostics.extend(
+                f"Calculation {item.id}: " + "; ".join(failures) + "."
+                for item, failures in zip(answer.calculations, per_calculation_failures)
             )
-            for item in answer.calculations
-        )
     else:
         calculation_pass = all(item.matches for item in answer.calculations)
-
-    uncertainty_pass = status == case["expected_status"] and all(
-        any(
-            _term_matches(_normalize(" ".join(answer.gaps + [answer.answer])), term)
-            for term in group
+        calculation_diagnostics.extend(
+            f"Calculation {item.id} did not match its server-recomputed result."
+            for item in answer.calculations
+            if not item.matches
         )
-        for group in case.get("uncertainty_terms", [])
-    )
+
+    uncertainty_diagnostics: list[str] = []
+    if status != case["expected_status"]:
+        uncertainty_diagnostics.append(
+            f"Expected answer status {case['expected_status']}; received {status}."
+        )
+    uncertainty_text = _normalize(" ".join(answer.gaps + [answer.answer]))
+    for group in case.get("uncertainty_terms", []):
+        if not any(_term_matches(uncertainty_text, term) for term in group):
+            uncertainty_diagnostics.append(
+                "Answer does not express the expected limitation: "
+                + " / ".join(group)
+                + "."
+            )
+    uncertainty_pass = not uncertainty_diagnostics
 
     checks = {
         "answer": answer_pass,
@@ -331,6 +406,15 @@ def score_case(
     }
     return {
         "checks": checks,
+        "check_details": {
+            "answer": answer_diagnostics,
+            "evidence": evidence_diagnostics,
+            "extraction": extraction_diagnostics or ([] if extraction_pass else [
+                "One or more expected source facts did not match the extracted facts."
+            ]),
+            "calculation": calculation_diagnostics,
+            "uncertainty": uncertainty_diagnostics,
+        },
         "passed": all(checks.values()),
         "expected_status": case["expected_status"],
         "actual_status": status,
@@ -339,6 +423,13 @@ def score_case(
 
 def score_extraction(case: dict[str, Any], documents: list[Any]) -> bool:
     """Score fresh extraction facts independently from the generated answer."""
+    return not score_extraction_diagnostics(case, documents)
+
+
+def score_extraction_diagnostics(
+    case: dict[str, Any], documents: list[Any]
+) -> list[str]:
+    """Explain which expected extracted values or locators were not found."""
     facts = [fact for document in documents for fact in document.facts]
     fact_text = " ".join(
         " ".join(
@@ -359,17 +450,34 @@ def score_extraction(case: dict[str, Any], documents: list[Any]) -> bool:
     )
     normalized_facts = _normalize(fact_text)
 
+    diagnostics: list[str] = []
     for expected in case.get("expected_numeric_values", []):
         expected_number = _decimal_expected(expected["value"])
-        if not any(
-            expected_number
-            in (_numbers(str(fact.get("value_number") or "")) | _numbers(str(fact.get("value_text") or "")))
-            and _unit_text_present(str(expected.get("unit", "")), " ".join(
-                [str(fact.get("unit") or ""), str(fact.get("value_text") or "")]
-            ))
+        value_facts = [
+            fact
             for fact in facts
+            if expected_number
+            in (
+                _numbers(str(fact.get("value_number") or ""))
+                | _numbers(str(fact.get("value_text") or ""))
+            )
+        ]
+        if not value_facts:
+            diagnostics.append(
+                f"No extracted fact contains expected value {expected['value']}."
+            )
+        elif not any(
+            _unit_text_present(
+                str(expected.get("unit", "")),
+                " ".join(
+                    [str(fact.get("unit") or ""), str(fact.get("value_text") or "")]
+                ),
+            )
+            for fact in value_facts
         ):
-            return False
+            diagnostics.append(
+                f"Expected value {expected['value']} has no fact with unit {expected.get('unit', '')}."
+            )
 
     for expected in case.get("expected_value_assertions", []):
         if not any(
@@ -377,7 +485,7 @@ def score_extraction(case: dict[str, Any], documents: list[Any]) -> bool:
             for document in documents
             for fact in document.facts
         ):
-            return False
+            diagnostics.append(_fact_value_assertion_failure(documents, expected))
 
     for group in case.get("expected_term_groups", []):
         if not any(
@@ -388,26 +496,37 @@ def score_extraction(case: dict[str, Any], documents: list[Any]) -> bool:
             )
             for term in group
         ):
-            return False
+            diagnostics.append(
+                "Extracted facts are missing an expected phrase: "
+                + " / ".join(group)
+                + "."
+            )
 
     for expected in case.get("expected_term_occurrences", []):
         if _term_occurrences(normalized_facts, expected["term"]) < int(expected["count"]):
-            return False
+            diagnostics.append(
+                f"Extracted facts contain fewer than {expected['count']} occurrences of {expected['term']}."
+            )
 
     for expected in case.get("expected_evidence", []):
         if not any(_fact_location_matches(fact, expected) for fact in facts):
-            return False
+            diagnostics.append(
+                "No verified extracted fact points to expected source location: "
+                + _expected_location_description(expected)
+                + "."
+            )
 
     for term in case.get("expected_extraction_absent_terms", []):
         if _term_matches(normalized_facts, term):
-            return False
-    return True
+            diagnostics.append(f"Unexpected extracted fact mentions {term}.")
+    return list(dict.fromkeys(diagnostics))
 
 
 def score_financial_year_summary(
     case: dict[str, Any],
     summary: FinancialYearSummaryResponse,
     extraction_pass: bool,
+    extraction_diagnostics: list[str] | None = None,
 ) -> dict[str, Any]:
     expected = case["financial_year_expected"]
     candidates = [
@@ -447,6 +566,8 @@ def score_financial_year_summary(
         any(_financial_year_source_matches(source, assertion) for source in summary.sources)
         for assertion in case.get("expected_value_assertions", [])
     )
+    primary_values: list[Decimal] = []
+    calculated_total = Decimal("0")
     if metric is not None:
         primary_values = [
             _decimal_expected(source.value)
@@ -488,6 +609,106 @@ def score_financial_year_summary(
         calculation_pass = False
         uncertainty_pass = False
 
+    answer_diagnostics: list[str] = []
+    if summary.financial_year != expected["financial_year"]:
+        answer_diagnostics.append(
+            f"Expected FY {expected['financial_year']}; received {summary.financial_year}."
+        )
+    if summary.coverage_status != "partial":
+        answer_diagnostics.append(
+            f"Expected partial coverage; received {summary.coverage_status}."
+        )
+    if metric is None:
+        answer_diagnostics.append(
+            "No unique electricity total-consumption metric was found in the FY summary."
+        )
+    elif metric.value != expected["value"] or metric.unit != expected["unit"]:
+        answer_diagnostics.append(
+            f"Expected electricity total {expected['value']} {expected['unit']}; "
+            f"received {metric.value or 'no value'} {metric.unit or ''}."
+        )
+    if metric is not None and metric.months_covered != expected["months_covered"]:
+        answer_diagnostics.append(
+            f"Expected {expected['months_covered']} covered months; "
+            f"received {metric.months_covered}."
+        )
+
+    evidence_diagnostics = [
+        "No verified FY source points to " + _expected_location_description(assertion) + "."
+        for assertion in case.get("expected_value_assertions", [])
+        if not any(
+            _financial_year_source_matches(source, assertion)
+            for source in summary.sources
+        )
+    ]
+    calculation_diagnostics: list[str] = []
+    uncertainty_diagnostics: list[str] = []
+    if not calculation_pass:
+        if metric is None:
+            calculation_diagnostics.append(
+                "The FY total cannot be reconciled because the expected metric is not unique."
+            )
+        elif len(primary_values) != expected["months_covered"]:
+            calculation_diagnostics.append(
+                f"Expected {expected['months_covered']} primary monthly values; "
+                f"found {len(primary_values)}."
+            )
+        elif calculated_total != _decimal_expected(expected["value"]):
+            calculation_diagnostics.append(
+                f"The primary monthly values sum to {calculated_total}; "
+                f"expected {expected['value']} {expected['unit']}."
+            )
+        elif metric.calculation is None:
+            calculation_diagnostics.append(
+                "The FY metric has no saved calculation expression."
+            )
+        else:
+            calculation_diagnostics.append(
+                "The FY metric value does not match the sum of its primary monthly sources."
+            )
+    if not uncertainty_pass:
+        if metric is None:
+            uncertainty_diagnostics.append(
+                "Coverage and missing-month details could not be checked because the expected series was not unique."
+            )
+        else:
+            covered_months = [month.label for month in metric.months if month.covered]
+            missing_months = [month.label for month in metric.months if not month.covered]
+            if covered_months != expected["covered_months"]:
+                uncertainty_diagnostics.append(
+                    "Covered months differ from the expected workbook periods: "
+                    + ", ".join(covered_months)
+                    + "."
+                )
+            if missing_months != expected["missing_months"]:
+                uncertainty_diagnostics.append(
+                    "Missing months differ from the expected periods: "
+                    + ", ".join(missing_months)
+                    + "."
+                )
+            if not all(
+                month.value is None for month in metric.months if not month.covered
+            ):
+                uncertainty_diagnostics.append(
+                    "At least one uncovered month has a value instead of remaining blank."
+                )
+            for resource in expected.get("no_data_metrics", []):
+                if not any(
+                    f"no usable {resource} records" in gap.casefold()
+                    and "not zero" in gap.casefold()
+                    for gap in summary.gaps
+                ):
+                    uncertainty_diagnostics.append(
+                        f"The summary does not clearly state that {resource} has no usable records and is not zero."
+                    )
+            if not any(
+                "missing months are not treated as zero" in gap.casefold()
+                for gap in summary.gaps
+            ):
+                uncertainty_diagnostics.append(
+                    "The summary does not state that missing months are not treated as zero."
+                )
+
     checks = {
         "answer": answer_pass,
         "extraction": extraction_pass,
@@ -497,6 +718,15 @@ def score_financial_year_summary(
     }
     return {
         "checks": checks,
+        "check_details": {
+            "answer": answer_diagnostics,
+            "extraction": extraction_diagnostics or ([] if extraction_pass else [
+                "One or more expected source facts did not match the extracted facts."
+            ]),
+            "evidence": evidence_diagnostics,
+            "calculation": calculation_diagnostics,
+            "uncertainty": uncertainty_diagnostics,
+        },
         "passed": all(checks.values()),
         "expected_status": case["expected_status"],
         "actual_status": summary.coverage_status,
@@ -583,6 +813,7 @@ def _unit_present(unit: str, answer: AnswerContent, candidate_unit: str | None =
 def _unit_text_present(unit: str, unit_text: str) -> bool:
     if not unit:
         return True
+    unit_text = unit_text.casefold()
     aliases = {
         "inr": ["inr", "₹", "rs."],
         "inr/cu.m": ["inr/cu.m", "₹/cu.m", "per cu.m", "/cu.m"],
@@ -593,7 +824,14 @@ def _unit_text_present(unit: str, unit_text: str) -> bool:
         "kwh": ["kwh"],
     }
     candidates = aliases.get(unit.casefold(), [unit.casefold()])
-    return any(item in unit_text for item in candidates)
+    return any(_unit_alias_matches(item, unit_text) for item in candidates)
+
+
+def _unit_alias_matches(alias: str, unit_text: str) -> bool:
+    if alias in {"₹", "%"}:
+        return alias in unit_text
+    pattern = re.compile(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", re.IGNORECASE)
+    return bool(pattern.search(unit_text))
 
 
 def _fact_location_matches(fact: dict[str, Any], expected: dict[str, Any]) -> bool:
@@ -665,10 +903,110 @@ def _fact_value_assertion_matches(
             str(expected.get("unit", "")),
             " ".join([value_text, str(fact.get("unit") or "")]),
         )
+        and (
+            not expected.get("period_start")
+            or fact.get("period_start") == expected["period_start"]
+        )
+        and (
+            not expected.get("period_end")
+            or fact.get("period_end") == expected["period_end"]
+        )
         and all(_term_matches(label, term) for term in expected.get("label_terms", []))
         and all(_term_matches(quote, term) for term in expected.get("source_terms", []))
         and _fact_location_matches(fact, location)
     )
+
+
+def _fact_value_assertion_failure(
+    documents: list[Any], expected: dict[str, Any]
+) -> str:
+    expected_document = expected.get("filename", "the source document")
+    candidates = [
+        fact
+        for document in documents
+        if document.filename.casefold() == str(expected_document).casefold()
+        for fact in document.facts
+        if _decimal_expected(expected["value"])
+        in (
+            _numbers(str(fact.get("value_number") or ""))
+            | _numbers(str(fact.get("value_text") or ""))
+        )
+    ]
+    value_description = _expected_value_description(expected)
+    if not candidates:
+        return f"{value_description}: no extracted fact contains the value."
+    if expected.get("unit") and not any(
+        _unit_text_present(
+            str(expected["unit"]),
+            " ".join([str(fact.get("unit") or ""), str(fact.get("value_text") or "")]),
+        )
+        for fact in candidates
+    ):
+        return f"{value_description}: extracted facts do not establish the expected unit."
+    if expected.get("period_start") and not any(
+        fact.get("period_start") == expected["period_start"]
+        and fact.get("period_end") == expected.get("period_end")
+        for fact in candidates
+    ):
+        periods = sorted(
+            {
+                f"{fact.get('period_start') or 'unset'} to {fact.get('period_end') or 'unset'}"
+                for fact in candidates
+            }
+        )
+        return (
+            f"{value_description}: expected period {expected['period_start']} to "
+            f"{expected.get('period_end') or 'unset'}, found {', '.join(periods)}."
+        )
+    if expected.get("label_terms") and not any(
+        all(
+            _term_matches(
+                _normalize(
+                    " ".join(
+                        str(fact.get(key) or "")
+                        for key in ("key", "label", "series")
+                    )
+                ),
+                term,
+            )
+            for term in expected["label_terms"]
+        )
+        for fact in candidates
+    ):
+        return f"{value_description}: extracted facts do not establish the expected label."
+    if not any(_fact_location_matches(fact, expected) for fact in candidates):
+        return f"{value_description}: no verified fact points to the expected source location."
+    if expected.get("source_terms") and not any(
+        all(
+            _term_matches(_normalize(str(fact.get("quote") or "")), term)
+            for term in expected["source_terms"]
+        )
+        for fact in candidates
+    ):
+        return f"{value_description}: the source quote does not contain the expected description."
+    return f"{value_description}: the fact was not verified against its source."
+
+
+def _expected_value_description(expected: dict[str, Any]) -> str:
+    parts = [str(expected.get("value", ""))]
+    if expected.get("unit"):
+        parts.append(str(expected["unit"]))
+    if expected.get("label_terms"):
+        parts.append("(" + ", ".join(expected["label_terms"]) + ")")
+    location = _expected_location_description(expected)
+    if location:
+        parts.append("at " + location)
+    return " ".join(part for part in parts if part)
+
+
+def _expected_location_description(expected: dict[str, Any]) -> str:
+    filename = str(expected.get("filename", "source document"))
+    if expected.get("page") is not None:
+        return f"{filename}, page {expected['page']}"
+    if expected.get("sheet"):
+        cell = expected.get("cell") or "the expected cell"
+        return f"{filename}, {expected['sheet']}!{cell}"
+    return filename
 
 
 def _evidence_matches(evidence: Any, expected: dict[str, Any]) -> bool:
@@ -676,11 +1014,17 @@ def _evidence_matches(evidence: Any, expected: dict[str, Any]) -> bool:
         return False
     locator = evidence.locator
     if "page" in expected:
-        return locator.page == expected["page"]
-    if locator.sheet != expected.get("sheet"):
-        return False
-    references = _expand_cells(locator.cell_range or "")
-    return expected.get("cell", "").upper() in references
+        location_matches = locator.page == expected["page"]
+    else:
+        references = _expand_cells(locator.cell_range or "")
+        location_matches = (
+            locator.sheet == expected.get("sheet")
+            and expected.get("cell", "").upper() in references
+        )
+    quote = _normalize(evidence.quote)
+    return location_matches and all(
+        _term_matches(quote, term) for term in expected.get("quote_terms", [])
+    )
 
 
 def _expand_cells(cell_range: str) -> set[str]:

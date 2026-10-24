@@ -18,27 +18,27 @@ from models import Document, EvaluationRun, ExtractionRun
 from prompts.answer import ANSWER_INSTRUCTIONS
 from prompts.fact_extraction import FACT_EXTRACTION_INSTRUCTIONS
 from schemas.extraction import Extraction
+from schemas.answers import AnswerContent
 from services.answer_service import (
     AnswerDocument,
-    AnswerRequestError,
     answer_model_name,
     generate_answer_for_documents,
 )
 from services.errors import TemporaryExtractionError
 from services.evaluation_service import (
     score_case,
-    score_extraction,
+    score_extraction_diagnostics,
     score_financial_year_summary,
 )
 from services.extraction import download_document, extract_document
 from services.extraction_queue import MAX_EXTRACTION_ATTEMPTS, retry_delay_seconds
 from services.financial_year_service import get_financial_year_summary
-from services.text_sanitization import sanitize_text
 from utils.worker_logging import configure_worker_logging
 
 logger = logging.getLogger(__name__)
 _WORKER_LEASE_SECONDS = 300
 _HEARTBEAT_SECONDS = 30
+_MAX_ANSWER_ATTEMPTS = 3
 
 if broker.is_worker_process:
     configure_worker_logging()
@@ -47,6 +47,15 @@ if broker.is_worker_process:
 
 class _EvaluationLeaseLost(RuntimeError):
     """Another worker reclaimed this run, so this worker must stop."""
+
+
+class _EvaluationAnswerFailure(RuntimeError):
+    def __init__(self, error: Exception, attempts: int):
+        self.attempts = attempts
+        self.retryable = bool(getattr(error, "retryable", False))
+        self.cause_type = getattr(error, "cause_type", None) or type(error).__name__
+        self.status_code = getattr(error, "status_code", None)
+        super().__init__("Evaluation answer generation failed.")
 
 
 @broker.task
@@ -700,6 +709,11 @@ async def _evaluate_case(
         },
         "answer": None,
         "error_message": None,
+        "failure_stage": None,
+        "failure_type": None,
+        "failure_attempts": None,
+        "retryable": None,
+        "answer_attempts": None,
         "document_snapshot": {},
         "duration_ms": None,
     }
@@ -720,65 +734,146 @@ async def _evaluate_case(
 
     started = datetime.now(UTC)
     try:
-        extraction_pass = score_extraction(case, documents)
-        answer_started = perf_counter()
+        extraction_diagnostics = score_extraction_diagnostics(case, documents)
+        extraction_pass = not extraction_diagnostics
+        answer, status, answer_attempts = await _generate_evaluation_answer(
+            case,
+            documents,
+            run_id,
+        )
+        case_result["answer_attempts"] = answer_attempts
+    except _EvaluationAnswerFailure as failure:
+        logger.warning(
+            "event=evaluation_answer_failed run_id=%s case_id=%s stage=llm_answer error_type=%s attempts=%s retryable=%s status_code=%s",
+            run_id,
+            case["id"],
+            failure.cause_type,
+            failure.attempts,
+            failure.retryable,
+            failure.status_code,
+        )
+        case_result["status"] = "error"
+        case_result["error_message"] = (
+            f"Answer generation failed after {failure.attempts} attempt(s) "
+            f"({failure.cause_type}). See worker logs for this run and case."
+        )
+        case_result["failure_stage"] = "llm_answer"
+        case_result["failure_type"] = failure.cause_type
+        case_result["failure_attempts"] = failure.attempts
+        case_result["retryable"] = failure.retryable
+        case_result["duration_ms"] = int(
+            (datetime.now(UTC) - started).total_seconds() * 1000
+        )
+        return case_result
+    except Exception as error:
+        logger.warning(
+            "event=evaluation_case_failed run_id=%s case_id=%s stage=case_evaluation error_type=%s",
+            run_id,
+            case["id"],
+            type(error).__name__,
+        )
+        case_result["status"] = "error"
+        case_result["error_message"] = (
+            f"Case evaluation failed ({type(error).__name__}). "
+            "See worker logs for this run and case."
+        )
+        case_result["failure_stage"] = "case_evaluation"
+        case_result["failure_type"] = type(error).__name__
+        case_result["failure_attempts"] = 0
+        case_result["retryable"] = False
+        case_result["duration_ms"] = int(
+            (datetime.now(UTC) - started).total_seconds() * 1000
+        )
+        return case_result
+
+    scored = score_case(
+        case,
+        answer,
+        status,
+        extraction_pass,
+        extraction_diagnostics,
+    )
+    case_result.update(scored)
+    case_result["status"] = "evaluated"
+    case_result["answer"] = answer.model_dump(mode="json")
+    case_result["duration_ms"] = int((datetime.now(UTC) - started).total_seconds() * 1000)
+    return case_result
+
+
+async def _generate_evaluation_answer(
+    case: dict,
+    documents: list[AnswerDocument],
+    run_id: UUID,
+) -> tuple[AnswerContent, str, int]:
+    total_started = perf_counter()
+    for attempt in range(1, _MAX_ANSWER_ATTEMPTS + 1):
+        attempt_started = perf_counter()
         logger.info(
-            "Sending evaluation question to Gemini for an answer | event=stage_started task=evaluation stage=llm_answer run_id=%s case_id=%s source_files=%s model=%s",
+            "Sending evaluation question to Gemini for an answer | event=stage_started task=evaluation stage=llm_answer run_id=%s case_id=%s source_files=%s model=%s attempt=%s/%s",
             run_id,
             case["id"],
             [document.filename for document in documents],
             answer_model_name(),
+            attempt,
+            _MAX_ANSWER_ATTEMPTS,
         )
         try:
             answer, status = await generate_answer_for_documents(
                 case["question"], documents
             )
         except Exception as error:
-            logger.error(
-                "Gemini answer request failed | event=stage_failed task=evaluation stage=llm_answer run_id=%s case_id=%s duration_ms=%s error_type=%s",
+            retryable = bool(getattr(error, "retryable", False))
+            cause_type = getattr(error, "cause_type", None) or type(error).__name__
+            status_code = getattr(error, "status_code", None)
+            duration_ms = int((perf_counter() - attempt_started) * 1000)
+            logger.warning(
+                "Gemini evaluation answer failed | event=stage_failed task=evaluation stage=llm_answer run_id=%s case_id=%s attempt=%s/%s duration_ms=%s error_type=%s retryable=%s status_code=%s",
                 run_id,
                 case["id"],
-                int((perf_counter() - answer_started) * 1000),
-                type(error).__name__,
+                attempt,
+                _MAX_ANSWER_ATTEMPTS,
+                duration_ms,
+                cause_type,
+                retryable,
+                status_code,
             )
-            raise
+            if retryable and attempt < _MAX_ANSWER_ATTEMPTS:
+                delay = retry_delay_seconds(attempt)
+                logger.info(
+                    "Scheduling evaluation answer retry | event=worker_retry_scheduled task=evaluation stage=llm_answer run_id=%s case_id=%s failed_attempt=%s next_attempt=%s delay_seconds=%s error_type=%s",
+                    run_id,
+                    case["id"],
+                    attempt,
+                    attempt + 1,
+                    delay,
+                    cause_type,
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.error(
+                "Evaluation answer attempts exhausted | event=stage_finished task=evaluation stage=llm_answer run_id=%s case_id=%s attempts=%s duration_ms=%s error_type=%s retryable=%s",
+                run_id,
+                case["id"],
+                attempt,
+                int((perf_counter() - total_started) * 1000),
+                cause_type,
+                retryable,
+            )
+            raise _EvaluationAnswerFailure(error, attempt) from error
+
         logger.info(
-            "Received answer from Gemini | event=stage_finished task=evaluation stage=llm_answer run_id=%s case_id=%s duration_ms=%s status=%s evidence=%s calculations=%s model=%s",
+            "Received answer from Gemini | event=stage_finished task=evaluation stage=llm_answer run_id=%s case_id=%s attempt=%s duration_ms=%s status=%s evidence=%s calculations=%s model=%s",
             run_id,
             case["id"],
-            int((perf_counter() - answer_started) * 1000),
+            attempt,
+            int((perf_counter() - attempt_started) * 1000),
             status,
             len(answer.evidence),
             len(answer.calculations),
             answer.model,
         )
-    except AnswerRequestError as error:
-        logger.warning(
-            "event=evaluation_answer_failed run_id=%s case_id=%s error_type=%s",
-            run_id,
-            case["id"],
-            type(error).__name__,
-        )
-        case_result["status"] = "error"
-        case_result["error_message"] = sanitize_text(str(error)) or "The answer could not be generated."
-        return case_result
-    except Exception as error:
-        logger.warning(
-            "event=evaluation_answer_failed run_id=%s case_id=%s error_type=%s",
-            run_id,
-            case["id"],
-            type(error).__name__,
-        )
-        case_result["status"] = "error"
-        case_result["error_message"] = "The answer could not be generated for this case."
-        return case_result
-
-    scored = score_case(case, answer, status, extraction_pass)
-    case_result.update(scored)
-    case_result["status"] = "evaluated"
-    case_result["answer"] = answer.model_dump(mode="json")
-    case_result["duration_ms"] = int((datetime.now(UTC) - started).total_seconds() * 1000)
-    return case_result
+        return answer, status, attempt
+    raise RuntimeError("Evaluation answer retry loop ended unexpectedly.")
 
 
 def _case_source_provenance(source: dict) -> dict:
@@ -896,11 +991,17 @@ async def _evaluate_financial_year_case(
                 True,
                 pinned_extraction_run_ids={document_id: extraction_run_id},
             )
-        extraction_pass = score_extraction(
+        extraction_diagnostics = score_extraction_diagnostics(
             case,
             [source_documents[filename]],
         )
-        scored = score_financial_year_summary(case, summary, extraction_pass)
+        extraction_pass = not extraction_diagnostics
+        scored = score_financial_year_summary(
+            case,
+            summary,
+            extraction_pass,
+            extraction_diagnostics,
+        )
     except Exception as error:
         logger.warning(
             "Financial-year evaluation case %s failed (%s)",

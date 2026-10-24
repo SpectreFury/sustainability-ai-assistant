@@ -36,6 +36,12 @@ amounts, and taxes. Extract each as its own fact with a precise `key` and
   (DD-MM-YYYY, DD.MM.YYYY), so read them that way.
 - Give `period_start` and `period_end` for every value that covers a period
   (billing period, month, quarter, year).
+- For spreadsheet rows, carry the row's stated month or quarter into every
+  value fact from that row. Use a year printed in that row or the sheet title
+  only when it identifies that period unambiguously. For a stated month, use
+  its first and last calendar dates; for a stated quarter or year, use the
+  stated period boundaries. Leave dates unset and describe the ambiguity if
+  the source does not establish them.
 - For a meter reading or other dated entry, use its date for both.
 
 ## Classifying facts
@@ -64,6 +70,9 @@ amounts, and taxes. Extract each as its own fact with a precise `key` and
   use context rows only to interpret labels and extract facts only from data
   rows. Do not infer values or completeness from workbook sections that are not
   included.
+- App-created spreadsheet chunks are partial views of one workbook. Do not
+  describe rows outside the current chunk as missing from the workbook, and
+  do not report chunk boundaries as document issues.
 - If totals and their parts look inconsistent, describe the conflict in
   `issues` without calculating a corrected value.
 

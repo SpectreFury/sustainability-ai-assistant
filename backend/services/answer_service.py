@@ -47,14 +47,90 @@ class AnswerRequestError(ValueError):
     def __init__(self, message: str, status_code: int):
         super().__init__(message)
         self.status_code = status_code
+        self.retryable = status_code in {408, 425, 429} or status_code >= 500
 
 
 class AnswerGenerationError(RuntimeError):
     """An answer model call failed or did not return the required structure."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        cause_type: str | None = None,
+        status_code: int | None = None,
+    ):
+        super().__init__(message)
+        self.retryable = retryable
+        self.cause_type = cause_type
+        self.status_code = status_code
+
 
 class AnswerModelNotConfigured(AnswerGenerationError):
     pass
+
+
+_RETRYABLE_ANSWER_ERRORS = {
+    "ConnectionError",
+    "ConnectTimeout",
+    "DeadlineExceeded",
+    "InternalServerError",
+    "JSONDecodeError",
+    "OutputParserException",
+    "ReadTimeout",
+    "ResourceExhausted",
+    "ServiceUnavailable",
+    "Timeout",
+    "TimeoutError",
+    "Unavailable",
+    "ValidationError",
+    "ValueError",
+}
+
+
+def _answer_error_details(error: Exception) -> tuple[bool, str, int | None]:
+    """Classify transient provider/structured-output errors without logging payloads."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    error_types: list[str] = []
+    retry_markers: list[str] = []
+    status_code: int | None = None
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        error_types.append(type(current).__name__)
+        retry_markers.append(type(current).__name__)
+        for candidate in (
+            getattr(current, "status_code", None),
+            getattr(current, "http_status", None),
+        ):
+            if isinstance(candidate, int):
+                status_code = candidate
+                break
+        response = getattr(current, "response", None)
+        response_status = getattr(response, "status_code", None)
+        if status_code is None and isinstance(response_status, int):
+            status_code = response_status
+        code = getattr(current, "code", None)
+        if callable(code):
+            try:
+                code = code()
+            except Exception:
+                code = None
+        if code is not None:
+            retry_markers.append(str(code).rsplit(".", 1)[-1])
+        current = current.__cause__ or current.__context__
+
+    retryable_status = status_code in {408, 425, 429, 500, 502, 503, 504}
+    retryable_names = {
+        re.sub(r"[^a-z0-9]", "", name.casefold())
+        for name in _RETRYABLE_ANSWER_ERRORS
+    }
+    retryable_name = any(
+        re.sub(r"[^a-z0-9]", "", name.casefold()) in retryable_names
+        for name in retry_markers
+    )
+    return retryable_status or retryable_name, error_types[-1], status_code
 
 
 @dataclass
@@ -633,13 +709,19 @@ async def generate_answer(
     except AnswerGenerationError:
         raise
     except Exception as error:
+        retryable, cause_type, status_code = _answer_error_details(error)
         logger.warning(
-            "Answer generation failed (%s): %s",
+            "Answer generation failed | error_type=%s cause_type=%s status_code=%s retryable=%s",
             type(error).__name__,
-            str(error)[:600],
+            cause_type,
+            status_code,
+            retryable,
         )
         raise AnswerGenerationError(
-            "The answer could not be generated. Please try again."
+            "The answer could not be generated. Please try again.",
+            retryable=retryable,
+            cause_type=cause_type,
+            status_code=status_code,
         ) from error
 
 

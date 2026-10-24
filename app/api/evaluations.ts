@@ -2,12 +2,14 @@ export type EvaluationStatus = "queued" | "running" | "completed" | "failed"
 export type EvaluationDimension = "answer" | "extraction" | "evidence" | "calculation" | "uncertainty"
 
 export type EvaluationCheckSet = Record<EvaluationDimension, boolean | null>
+export type EvaluationCheckDetails = Partial<Record<EvaluationDimension, string[]>>
 
 export type EvaluationEvidenceExpectation = {
   filename: string
   page?: number
   sheet?: string
   cell?: string
+  quote_terms?: string[]
 }
 
 export type EvaluationCase = {
@@ -68,6 +70,7 @@ export type EvaluationCaseResult = {
   status: "evaluated" | "blocked" | "error"
   passed: boolean | null
   checks: EvaluationCheckSet
+  check_details?: EvaluationCheckDetails
   expected_status?: string
   actual_status?: string
   answer: EvaluationAnswer | null
@@ -115,6 +118,11 @@ export type EvaluationCaseResult = {
   period_label?: string | null
   months_covered?: number
   error_message: string | null
+  failure_stage?: string | null
+  failure_type?: string | null
+  failure_attempts?: number | null
+  retryable?: boolean | null
+  answer_attempts?: number | null
   document_snapshot: Record<string, { document_id: string | null; file_hash: string | null; status_at_start: string | null; extraction_model?: string | null; extraction_pipeline?: string | null; extraction_prompt_hash?: string | null; extraction_attempts?: number | null; financial_year_extraction_run_id?: string | null }>
   duration_ms: number | null
 }

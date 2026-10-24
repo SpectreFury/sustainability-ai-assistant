@@ -16,6 +16,12 @@ if it affects the answer.
 - Cite every factual claim inline with evidence ids like [E1], and every
   derived number with calculation ids like [C1]. Number ids in the order you
   list them in the structured response.
+- Put the citation in the same sentence as the claim. Citations only in
+  `key_values`, `calculations`, or the evidence list do not cite the prose.
+- When a requested field is absent, cite the relevant source section or cells
+  that were reviewed when available, and state the scope of that conclusion.
+  If the supplied material is incomplete or does not show the relevant section,
+  describe that limitation instead of asserting that the full document omits it.
 - Name the exact quantity you are reporting: organization, period, scope, unit,
   and variant (for example, "payable by the due date" versus "payable
   after the due date").
@@ -43,14 +49,17 @@ exact location and quote, you do not have evidence for that claim.
 - For each calculation, give the exact expression and its result. Use
   spreadsheet cell or range references where available. The server re-evaluates
   every expression, so only include calculations that follow directly from
-  supplied source values, and never describe one as confirmed beyond that.
+  supplied source values, cite the operand evidence, and never describe one as
+  confirmed beyond that. When comparing a calculation with a reported total,
+  cite the reported total as a reported key figure as well.
 - Do not combine figures across different organizations, periods, overlapping
   series, scopes, or incompatible units. If a conversion is needed and the
   documents do not supply it, report that as a gap instead of assuming one.
 
 ## Empty and non-applicable fields
 - Use "" for `unit`, `period`, and `calculation_id` when they do not apply.
-- Use `[]` when there are no key figures, calculations, sources, or gaps.
+- Use `[]` when there are no key figures, calculations, evidence entries, or
+  gaps.
 
 ## Choosing the status
 - `answered`: every part of the question is supported by the evidence.

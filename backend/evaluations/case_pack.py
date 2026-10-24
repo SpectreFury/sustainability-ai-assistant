@@ -40,6 +40,8 @@ EVALUATION_CASES: list[dict[str, Any]] = [
                 "label_terms": label_terms,
                 "sheet": "Monthly Summary 2026",
                 "cell": cell,
+                "period_start": "2026-06-01",
+                "period_end": "2026-06-30",
             }
             for value, label_terms, cell in [
                 ("127800", ["grid supply"], "B8"),
@@ -152,7 +154,17 @@ EVALUATION_CASES: list[dict[str, Any]] = [
         "expected_status": "answered",
         "expected_numeric_values": [],
         "expected_term_groups": [
-            ["dash", "not reported", "not numeric", "no numeric", "not provided", "no value"]
+            [
+                "dash",
+                "dashes",
+                "not reported",
+                "not numeric",
+                "no numeric",
+                "not provided",
+                "no value",
+                "does not give a numeric",
+                "does not provide a numeric",
+            ]
         ],
         "expected_evidence": [
             {"filename": "Annual Electricity Consumption.xlsx", "sheet": "Source-wise Annual Analysis", "cell": "G2"},
@@ -228,8 +240,10 @@ EVALUATION_CASES: list[dict[str, Any]] = [
         "id": "EV07",
         "title": "Approval date is not an effective date",
         "question": (
-            "What effective date does the Food Safety and Quality Policy give? "
-            "Do not substitute its approval date for an effective date."
+            "Does the Food Safety and Quality Policy state an effective date "
+            "separate from its approval date? If no separate effective date is "
+            "shown, say so and cite the approval-date entry without treating it "
+            "as an effective date."
         ),
         "domain": "Uncertainty handling · Policy dates",
         "required_documents": ["quality_policy_nestle.pdf"],
@@ -237,11 +251,22 @@ EVALUATION_CASES: list[dict[str, Any]] = [
         "expected_numeric_values": [],
         "expected_term_groups": [],
         "expected_evidence": [
-            {"filename": "quality_policy_nestle.pdf", "page": 2},
+            {
+                "filename": "quality_policy_nestle.pdf",
+                "page": 2,
+                "quote_terms": ["Date of approval", "June 2026"],
+            },
         ],
         "calculation": None,
         "uncertainty_terms": [
-            ["effective date is not stated", "does not state an effective date", "no effective date", "approval date only"]
+            [
+                "effective date is not stated",
+                "does not state an effective date",
+                "do not state an effective date",
+                "does not give an effective date",
+                "no effective date",
+                "approval date only",
+            ]
         ],
         "expected_extraction_absent_terms": ["effective date"],
     },
@@ -315,9 +340,18 @@ EVALUATION_CASES: list[dict[str, Any]] = [
             "expected_evidence": [
                 {"filename": "Annual Electricity Consumption.xlsx", "sheet": "Monthly Summary 2026", "cell": "C8"},
                 {"filename": "Annual Electricity Consumption.xlsx", "sheet": "Monthly Summary 2026", "cell": "D8"},
-                {"filename": "Annual Electricity Consumption.xlsx", "sheet": "Monthly Summary 2026", "cell": "E8"},
             ],
         },
+        "expected_value_assertions": [
+            {
+                "filename": "Annual Electricity Consumption.xlsx",
+                "value": "81700",
+                "unit": "kWh",
+                "label_terms": ["total renewable"],
+                "sheet": "Monthly Summary 2026",
+                "cell": "E8",
+            }
+        ],
         "uncertainty_terms": [],
     },
     {
@@ -341,17 +375,19 @@ EVALUATION_CASES: list[dict[str, Any]] = [
                 "label_terms": ["total consumption"],
                 "sheet": "Monthly Summary 2026",
                 "cell": cell,
+                "period_start": period_start,
+                "period_end": period_end,
             }
-            for value, cell in [
-                ("203900", "F6"),
-                ("214900", "F7"),
-                ("209500", "F8"),
-                ("194100", "F9"),
-                ("198600", "F10"),
-                ("206300", "F11"),
-                ("211600", "F12"),
-                ("203500", "F13"),
-                ("199400", "F14"),
+            for value, cell, period_start, period_end in [
+                ("203900", "F6", "2026-04-01", "2026-04-30"),
+                ("214900", "F7", "2026-05-01", "2026-05-31"),
+                ("209500", "F8", "2026-06-01", "2026-06-30"),
+                ("194100", "F9", "2026-07-01", "2026-07-31"),
+                ("198600", "F10", "2026-08-01", "2026-08-31"),
+                ("206300", "F11", "2026-09-01", "2026-09-30"),
+                ("211600", "F12", "2026-10-01", "2026-10-31"),
+                ("203500", "F13", "2026-11-01", "2026-11-30"),
+                ("199400", "F14", "2026-12-01", "2026-12-31"),
             ]
         ],
         "expected_evidence": [
