@@ -1,6 +1,0 @@
-.env
-.env.*
-!.env.example
-/kuki-assignment-dataset/
-PLAN.md
-/benchmark
