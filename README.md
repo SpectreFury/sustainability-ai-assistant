@@ -48,4 +48,11 @@ This is just for the reviewer's ease of use and nothing more.
 
 ## Evals Improvement
 
+### V1
+<img width="1906" height="959" alt="image" src="https://github.com/user-attachments/assets/9cd983f5-5762-4e7a-91f5-3b292950c776" />
+
+### V4
+<img width="1906" height="959" alt="image" src="https://github.com/user-attachments/assets/db013082-4891-4a77-a1a8-72dfc3e8edcf" />
+
+
 
