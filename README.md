@@ -2,11 +2,13 @@
 
 ## Tech stack
 
-- Frontend - Next.js, Tailwind, Tanstack Query.
-- Backend - FastAPI, PostgreSQL, SQLAlchemy, Alembic
-- Workers - TaskIQ (Queue), Redis(Broker)
-- Tools - Langfuse
-- LLM APIS - gemini-3.5-flash-lite
+- **Frontend:** Next.js, React, Chakra UI, Tailwind CSS, TanStack Query, Zod.
+- **Backend:** Python, FastAPI, Pydantic, PostgreSQL, SQLAlchemy, Alembic.
+- **Background jobs:** TaskIQ and Redis.
+- **Document storage and parsing:** Cloudinary, PyMuPDF, OpenPyXL.
+- **AI:** Gemini (`gemini-3.5-flash-lite`) through LangChain Google GenAI.
+- **Observability:** Langfuse (optional).
+- **Authentication:** JWT and bcrypt.
 
 ## Coding tools used
 
