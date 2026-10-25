@@ -83,6 +83,12 @@ Additionally, I have added user authentication to this project even if it was no
 
 I was severely hindered by the model quality, we constant hit rate limit with the gemini API and if given the choice, I would select a much powerful model for extraction. However, even if we hit rate limiting, the system is build in a way that we retry and the processing mostly finishes.
 
+## What I would do to make this production-ready
+
+- **Stream assistant responses:** Add Server-Sent Events (SSE) backed by Redis
+  Streams, with interruption handling so users can stop an in-progress response.
+- **Improve document extraction:** Use a much stronger extraction model or
+  switch to vision-language-model-powered OCR for more reliable extraction.
 
 ## Images 
 
