@@ -91,7 +91,14 @@ type CloudinaryUpload = {
   secure_url: string
 }
 
-export type FileUploadStatus = "queued" | "uploading" | "uploaded" | "failed"
+class DuplicateDocumentUploadError extends Error {}
+
+export type FileUploadStatus =
+  | "queued"
+  | "uploading"
+  | "uploaded"
+  | "already_uploaded"
+  | "failed"
 
 export type FinancialYearOption = { value: string; label: string }
 export type FinancialYearOrganisationOption = { value: string; label: string }
@@ -279,12 +286,12 @@ export async function uploadDocuments(
   if (!backendUrl) throw new Error("NEXT_PUBLIC_BACKEND_URL is not set.")
 
   const maxConcurrentUploads = 3
-  const results = new Array<PromiseSettledResult<DocumentRecord>>(files.length)
+  const results = new Array<PromiseSettledResult<DocumentRecord | null>>(files.length)
   let nextIndex = 0
 
   for (const file of files) onFileStatus?.(file, "queued")
 
-  async function uploadOne(file: File): Promise<DocumentRecord> {
+  async function uploadOne(file: File): Promise<DocumentRecord | null> {
     let signature: UploadSignature | undefined
     onFileStatus?.(file, "uploading")
 
@@ -308,10 +315,15 @@ export async function uploadDocuments(
 
       if (!signatureResponse.ok) {
         const result = await signatureResponse.json().catch(() => null)
-        throw new Error(
+        const detail =
           typeof result?.detail === "string"
             ? result.detail
-            : "Unable to prepare the upload.",
+            : "Unable to prepare the upload."
+        if (signatureResponse.status === 409) {
+          throw new DuplicateDocumentUploadError(detail)
+        }
+        throw new Error(
+          detail,
         )
       }
 
@@ -359,6 +371,10 @@ export async function uploadDocuments(
       onFileStatus?.(file, "uploaded")
       return (await completeResponse.json()) as DocumentRecord
     } catch (error) {
+      if (error instanceof DuplicateDocumentUploadError) {
+        onFileStatus?.(file, "already_uploaded")
+        return null
+      }
       if (signature) {
         await fetch(`${backendUrl}/documents/${signature.document_id}/failed`, {
           method: "POST",
@@ -409,6 +425,6 @@ export async function uploadDocuments(
   }
 
   return results.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : [],
+    result.status === "fulfilled" && result.value ? [result.value] : [],
   )
 }

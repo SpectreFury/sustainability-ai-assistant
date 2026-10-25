@@ -68,6 +68,7 @@ export function UploadArea() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
   })
   const hasDocuments = (documentsQuery.data?.length ?? 0) > 0
+  const uploadedCount = uploadMutation.data?.length ?? 0
 
   return (
     <Stack w="full" maxW="7xl" gap="6">
@@ -89,6 +90,7 @@ export function UploadArea() {
           const filesToUpload = acceptedFiles.filter(
             (file) =>
               fileStatuses[fileKey(file)] !== "uploaded" &&
+              fileStatuses[fileKey(file)] !== "already_uploaded" &&
               fileStatuses[fileKey(file)] !== "uploading",
           )
           setFileStatuses((current) =>
@@ -172,6 +174,11 @@ export function UploadArea() {
                             Uploaded
                           </Text>
                         )}
+                        {fileStatuses[fileKey(file)] === "already_uploaded" && (
+                          <Text fontSize="sm" color="fg.muted">
+                            Already uploaded
+                          </Text>
+                        )}
                         {fileStatuses[fileKey(file)] === "failed" && (
                           <Text fontSize="sm" color="red.500">
                             Upload failed
@@ -192,8 +199,10 @@ export function UploadArea() {
                 </Text>
               )}
               {uploadMutation.isSuccess && (
-                <Text role="status" color="green.600">
-                  Documents uploaded successfully.
+                <Text role="status" color={uploadedCount > 0 ? "green.600" : "fg.muted"}>
+                  {uploadedCount > 0
+                    ? "Documents uploaded successfully."
+                    : "These documents are already uploaded."}
                 </Text>
               )}
             </>
