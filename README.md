@@ -56,42 +56,18 @@ make dev
 
 
 
-## Evaluation cases and saved results
+## Reviewer account
 
-The current case pack is `kuki-dataset-v4` and contains 14 source-grounded cases
-across the six files below. The cases check reported values, exact source
-locations, uncertainty and missing-value behavior, and selected calculations.
-
-- `Annual Electricity Consumption.xlsx`
-- `Adani commercial electricity bill.pdf`
-- `BESCOM Commercial Electricity Bill.pdf`
-- `form 3 filled.docx.pdf`
-- `quality_policy_nestle.pdf`
-- `water_bill_invoice.pdf`
-
-Completed evaluation results are persisted in Postgres.
-
-### Saved comparison: v1 to v2
-
-| Case-set version | Cases passing | Pass rate |
-| --- | ---: | ---: |
-| `kuki-dataset-v1` | 2 / 11 | 18.2% |
-| `kuki-dataset-v2` | 10 / 11 | 90.9% |
-
-The saved v2 run passed eight more cases than v1. Treat this as a historical
-version-to-version comparison, not a controlled A/B test: both runs recorded 11
-cases, but their case-set and answer/extraction prompt hashes differ. The later
-v3 and v4 runs each used a 14-case pack, so they are separate results and are
-not included in this comparison.
+The latest evaluation result will be visible in the reviewer account. I’ll send
+the account details by email.
 
 ## Approach and design choices
 
 - **Frontend:** Next.js, React, and Tailwind CSS.
 - **API and data:** FastAPI, SQLAlchemy, and Postgres store accounts, document
-  metadata, extracted facts, evidence locations, answers, and evaluation runs.
+  metadata, extracted facts, evidence locations, and answers.
 - **Files and background work:** documents are uploaded to Cloudinary; Redis
-  with Taskiq queues extraction and evaluation work so the API can return while
-  longer jobs run.
+  with Taskiq queues longer-running jobs so the API can return promptly.
 - **GenAI:** Gemini extracts structured facts from PDF and XLSX content and
   drafts evidence-grounded answers. The application retrieves relevant facts
   from Postgres and prepares the evidence context; the model does not query the
