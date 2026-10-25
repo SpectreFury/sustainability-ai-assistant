@@ -1,5 +1,6 @@
 "use client"
 
+import { Skeleton } from "@chakra-ui/react"
 import {
   getEvaluationCases,
   getEvaluationRun,
@@ -106,6 +107,89 @@ function aggregateChecks(run?: EvaluationRun) {
   }))
 }
 
+function EvaluationLoadingSkeleton() {
+  return (
+    <main className="evaluations-page" aria-busy="true">
+      <header className="review-topbar">
+        <div className="review-breadcrumb">
+          <Link href="/workspace">Workspace</Link>
+          <span aria-hidden="true">/</span>
+          <strong>Evaluations</strong>
+        </div>
+        <div className="review-topbar-meta">
+          <span className="evaluation-live-tag">Source-grounded evaluation</span>
+          <span>Loading results…</span>
+        </div>
+      </header>
+      <div className="evaluations-content">
+        <span className="sr-only" role="status">Loading evaluation results…</span>
+        <div className="evaluations-title-row">
+          <div>
+            <h1>Better answers. Measurable evidence.</h1>
+            <p>Run source-backed cases through the current extraction, answer, and financial-year workflows.</p>
+          </div>
+          <Skeleton height="40px" width="145px" borderRadius="7px" />
+        </div>
+        <div className="evaluation-run-row" aria-hidden="true">
+          <Skeleton height="40px" width="180px" borderRadius="7px" />
+          <Skeleton height="13px" width="210px" />
+          <Skeleton height="28px" width="175px" borderRadius="5px" ml="auto" />
+        </div>
+        <section className="evaluation-score-grid" aria-hidden="true">
+          {Array.from({ length: 3 }, (_, index) => (
+            <article className="evaluation-score-card" key={index}>
+              <Skeleton height="12px" width={index === 1 ? "125px" : "105px"} />
+              <Skeleton height="30px" width="78px" mt="18px" mb="12px" />
+              <Skeleton height="12px" width={index === 2 ? "68%" : "82%"} mt="auto" />
+            </article>
+          ))}
+        </section>
+        <section className="evaluation-panel evaluation-dimensions" aria-hidden="true">
+          <div className="evaluation-panel-heading">
+            <div>
+              <Skeleton height="15px" width="125px" mb="8px" />
+              <Skeleton height="11px" width="min(460px, 80vw)" />
+            </div>
+          </div>
+          <div className="evaluation-dimension-grid">
+            {dimensions.map((dimension) => (
+              <div className="evaluation-dimension" key={dimension.key}>
+                <Skeleton height="12px" width="78px" />
+                <Skeleton height="15px" width="38px" />
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="evaluation-panel" aria-hidden="true">
+          <div className="evaluation-panel-heading evaluation-cases-heading">
+            <div>
+              <Skeleton height="15px" width="105px" mb="8px" />
+              <Skeleton height="11px" width="min(540px, 80vw)" />
+            </div>
+            <Skeleton height="28px" width="92px" borderRadius="5px" />
+          </div>
+          <div className="evaluation-table-scroll">
+            <table className="evaluation-table">
+              <thead><tr><th>Case &amp; question</th><th>Expected source</th><th>Result</th><th>A / X / E / C / U</th><th>Duration</th></tr></thead>
+              <tbody>
+                {Array.from({ length: 4 }, (_, index) => (
+                  <tr key={index}>
+                    <td><Skeleton height="13px" width={index === 1 ? "70%" : "88%"} /></td>
+                    <td><Skeleton height="12px" width="82%" /></td>
+                    <td><Skeleton height="22px" width="54px" borderRadius="5px" /></td>
+                    <td><Skeleton height="14px" width="110px" /></td>
+                    <td><Skeleton height="12px" width="36px" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  )
+}
+
 export function EvaluationsArea() {
   const queryClient = useQueryClient()
   const [selectedRunId, setSelectedRunId] = useState("")
@@ -145,6 +229,11 @@ export function EvaluationsArea() {
   const errors = run?.error_count ?? 0
   const active = Boolean(runsQuery.data?.some((item) => isActive(item.status))) || startMutation.isPending
   const loadError = runQuery.error ?? casesQuery.error ?? runsQuery.error
+  const isInitialLoading = !loadError && (
+    casesQuery.isPending ||
+    runsQuery.isPending ||
+    Boolean(activeId && runQuery.isPending)
+  )
 
   function exportRun() {
     if (!run) return
@@ -172,6 +261,10 @@ export function EvaluationsArea() {
     anchor.download = `kuki-evaluation-${run.case_set_version}-${run.id.slice(0, 8)}.csv`
     anchor.click()
     URL.revokeObjectURL(url)
+  }
+
+  if (isInitialLoading) {
+    return <EvaluationLoadingSkeleton />
   }
 
   return (
