@@ -69,11 +69,7 @@ locations, uncertainty and missing-value behavior, and selected calculations.
 - `quality_policy_nestle.pdf`
 - `water_bill_invoice.pdf`
 
-Completed evaluation results are persisted in Postgres and the repository
-includes a portable SQL snapshot at
-[`backend/evaluations/seeds/evaluation_runs.sql`](backend/evaluations/seeds/evaluation_runs.sql).
-The snapshot contains historical runs for `kuki-dataset-v1` through
-`kuki-dataset-v4`.
+Completed evaluation results are persisted in Postgres.
 
 ### Saved comparison: v1 to v2
 
