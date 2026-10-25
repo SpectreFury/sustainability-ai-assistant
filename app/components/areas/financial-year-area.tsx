@@ -4,6 +4,7 @@ import { Skeleton } from "@chakra-ui/react"
 import {
   getFinancialYearSummary,
   type FinancialYearMetric,
+  type FinancialYearOption,
   type FinancialYearSource,
   type FinancialYearSummary,
 } from "@/api/documents"
@@ -26,6 +27,17 @@ function formatNumber(value: string | null) {
   const integer = match[2].replace(/\B(?=(\d{3})+(?!\d))/g, ",")
   const fraction = match[3]?.slice(1).replace(/0+$/, "") ?? ""
   return `${match[1]}${integer}${fraction ? `.${fraction}` : ""}`
+}
+
+function mergeFinancialYearOptions(
+  existing: FinancialYearOption[],
+  incoming: FinancialYearOption[],
+) {
+  const options = new Map<string, FinancialYearOption>()
+  for (const option of [...existing, ...incoming]) {
+    options.set(option.value, option)
+  }
+  return [...options.values()].sort((left, right) => right.value.localeCompare(left.value))
 }
 
 function dateLabel(value: string) {
@@ -474,6 +486,9 @@ export function FinancialYearArea() {
   const [financialYear, setFinancialYear] = useState("")
   const [organisation, setOrganisation] = useState("")
   const [documentIds, setDocumentIds] = useState<string[] | null>(null)
+  const [yearOptionsByOrganisation, setYearOptionsByOrganisation] = useState<
+    Record<string, FinancialYearOption[]>
+  >({})
   const stableDocumentIds = useMemo(
     () => documentIds === null ? null : [...documentIds].sort(),
     [documentIds],
@@ -492,6 +507,24 @@ export function FinancialYearArea() {
         : false,
   })
   const summary = summaryQuery.data
+
+  useEffect(() => {
+    if (!summary) return
+    const organisationKey = summary.organisation ?? ""
+    setYearOptionsByOrganisation((current) => {
+      const previous = current[organisationKey] ?? []
+      const merged = mergeFinancialYearOptions(previous, summary.financial_year_options)
+      if (
+        previous.length === merged.length &&
+        previous.every((option, index) =>
+          option.value === merged[index]?.value && option.label === merged[index]?.label,
+        )
+      ) {
+        return current
+      }
+      return { ...current, [organisationKey]: merged }
+    })
+  }, [summary])
 
   useEffect(() => {
     if (!summary) return
@@ -515,6 +548,20 @@ export function FinancialYearArea() {
   const selectedOrganisationLabel = summary
     ? summary.organisation_options.find((option) => option.value === summary.organisation)?.label ?? "All organisations"
     : "All organisations"
+  const financialYearOptions = useMemo(() => {
+    if (!summary) return []
+    const organisationKey = summary.organisation ?? ""
+    const options = mergeFinancialYearOptions(
+      yearOptionsByOrganisation[organisationKey] ?? [],
+      summary.financial_year_options,
+    )
+    const selectedYearOption = summary.financial_year_options.find(
+      (option) => option.value === financialYear,
+    )
+    return selectedYearOption && !options.some((option) => option.value === financialYear)
+      ? [selectedYearOption, ...options]
+      : options
+  }, [financialYear, summary, yearOptionsByOrganisation])
 
   if (summaryQuery.isPending) return <FinancialYearLoadingSkeleton />
 
@@ -560,7 +607,7 @@ export function FinancialYearArea() {
                 value={financialYear || summary.financial_year}
                 onChange={(event) => setFinancialYear(event.target.value)}
               >
-                {summary.financial_year_options.map((option) => (
+                {financialYearOptions.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
