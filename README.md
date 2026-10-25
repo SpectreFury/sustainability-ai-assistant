@@ -23,7 +23,7 @@
 - Python (uv)
 - Make (mostly there in linux and mac)
 
-**PS**: I want to make your life easier so that you can run this locally and hence I am **INTENTIONALLY** committing my .env, I know this is stupid in all scenarios, I just want you to have no friction when you verify the project.
+**PS**: I want to make your life easier so that you can run this locally and hence I am $\color{red}{\text{INTENTIONALLY}}$ committing my .env, I know this is stupid in all scenarios, I just want you to have no friction when you verify the project.
 
 ### Windows
 
