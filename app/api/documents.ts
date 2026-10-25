@@ -7,6 +7,8 @@ export type DocumentRecord = {
   status: "pending" | "processing" | "success" | "failed"
   error_message: string | null
   upload_timestamp: string
+  chunks_completed?: number | null
+  chunks_total?: number | null
 }
 
 export type ReviewLocator = {

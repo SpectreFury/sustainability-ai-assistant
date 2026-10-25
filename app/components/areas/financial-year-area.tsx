@@ -245,8 +245,8 @@ function CoverageGrid({ metrics }: { metrics: FinancialYearMetric[] }) {
             {(metrics[0]?.months ?? []).map((month) => <span key={month.label}>{month.label}</span>)}
           </div>
         </div>
-        {metrics.map((metric) => (
-          <div className="fy-month-row" role="row" key={`${metric.metric}-${metric.series ?? "none"}-${metric.unit ?? "none"}`}>
+        {metrics.map((metric, index) => (
+          <div className="fy-month-row" role="row" key={`${metric.metric}-${metric.series ?? "none"}-${metric.unit ?? "none"}-${index}`}>
             <div className="fy-resource-label" role="rowheader">
               <strong>{metric.label}{metric.series ? ` · ${metric.series}` : ""}</strong>
               <span>{metric.unit ? `${metric.unit} / month` : "No unit available"}</span>
@@ -509,9 +509,9 @@ export function FinancialYearArea() {
             ) : (
               <>
                 <section className="fy-kpi-grid" aria-label="Financial-year resource totals">
-                  {coreMetrics.map((metric) => (
+                  {coreMetrics.map((metric, index) => (
                     <MetricCard
-                      key={`${metric.metric}-${metric.series ?? ""}-${metric.unit ?? ""}`}
+                      key={`${metric.metric}-${metric.series ?? ""}-${metric.unit ?? ""}-${index}`}
                       metric={metric}
                       accent={metric.metric === "water" ? "amber" : metric.metric === "waste" ? "ink" : "green"}
                     />

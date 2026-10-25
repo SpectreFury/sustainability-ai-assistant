@@ -22,6 +22,14 @@ function DocumentTypeIcon({ filename }: { filename: string }) {
 
 function statusText(document: DocumentRecord) {
   if (document.error_message) return document.error_message
+  if (
+    document.status === "processing" &&
+    document.chunks_total !== null &&
+    document.chunks_total !== undefined &&
+    document.chunks_total > 1
+  ) {
+    return `${document.chunks_completed ?? 0} of ${document.chunks_total} chunks`
+  }
   return {
     pending: "Waiting to process",
     processing: "Processing document",

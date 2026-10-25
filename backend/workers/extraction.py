@@ -33,6 +33,32 @@ _HEARTBEAT_SECONDS = max(
     ),
 )
 
+
+async def _save_chunk_progress(
+    run_id: UUID,
+    document_id: UUID,
+    lease_token: UUID,
+    chunks_completed: int,
+    chunks_total: int,
+) -> bool:
+    async with SessionLocal() as session:
+        result = await session.execute(
+            update(ExtractionRun)
+            .where(
+                ExtractionRun.id == run_id,
+                ExtractionRun.document_id == document_id,
+                ExtractionRun.status == "running",
+                ExtractionRun.lease_token == lease_token,
+            )
+            .values(
+                chunks_completed=chunks_completed,
+                chunks_total=chunks_total,
+            )
+        )
+        await session.commit()
+        return result.rowcount == 1
+
+
 if broker.is_worker_process:
     configure_worker_logging()
     logger.info("Worker task registered | task=extraction")
@@ -84,6 +110,8 @@ async def process_document(extraction_run_id: str) -> None:
                     lease_expires_at=now + timedelta(seconds=_LEASE_SECONDS),
                     completed_at=None,
                     error_message=None,
+                    chunks_completed=0,
+                    chunks_total=None,
                 )
                 .returning(ExtractionRun.document_id, ExtractionRun.attempt_number)
             )
@@ -183,6 +211,27 @@ async def process_document(extraction_run_id: str) -> None:
             len(content),
         )
         try:
+            async def report_chunk_progress(
+                chunks_completed: int,
+                chunks_total: int,
+            ) -> None:
+                try:
+                    await _save_chunk_progress(
+                        parsed_run_id,
+                        document_id,
+                        lease_token,
+                        chunks_completed,
+                        chunks_total,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not persist workbook chunk progress | run_id=%s document_id=%s completed=%s total=%s",
+                        parsed_run_id,
+                        document_id,
+                        chunks_completed,
+                        chunks_total,
+                    )
+
             extracted = await extract_document(
                 filename,
                 content,
@@ -191,6 +240,7 @@ async def process_document(extraction_run_id: str) -> None:
                     "extraction_run_id": str(parsed_run_id),
                     "attempt_number": str(attempt_number),
                 },
+                on_chunk_progress=report_chunk_progress,
             )
         except Exception as error:
             logger.error(
@@ -416,6 +466,8 @@ async def _mark_failed(
             run.status = "queued"
             run.completed_at = None
             run.error_message = _user_facing_error(error)
+            run.chunks_completed = 0
+            run.chunks_total = None
             run.attempt_number += 1
             document.attempt_count = run.attempt_number
             document.retry_count += 1

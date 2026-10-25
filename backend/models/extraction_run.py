@@ -47,6 +47,10 @@ class ExtractionRun(Base):
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="running", server_default="running"
     )
+    chunks_completed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    chunks_total: Mapped[int | None] = mapped_column(Integer)
     extraction_version: Mapped[str] = mapped_column(
         String(32), nullable=False, default="v1", server_default="v1"
     )

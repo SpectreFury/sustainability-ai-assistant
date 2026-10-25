@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from cloudinary.utils import api_sign_request
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -151,13 +151,58 @@ async def fail_document_upload(
 async def list_user_documents(
     session: AsyncSession,
     user_id: int,
-) -> list[Document]:
-    documents = await session.scalars(
-        select(Document)
+) -> list[DocumentResponse]:
+    latest_runs = (
+        select(
+            ExtractionRun.document_id.label("document_id"),
+            ExtractionRun.chunks_completed.label("chunks_completed"),
+            ExtractionRun.chunks_total.label("chunks_total"),
+            func.row_number()
+            .over(
+                partition_by=ExtractionRun.document_id,
+                order_by=ExtractionRun.attempt_number.desc(),
+            )
+            .label("run_number"),
+        )
+        .join(Document, Document.id == ExtractionRun.document_id)
+        .where(Document.user_id == user_id)
+        .subquery()
+    )
+    rows = await session.execute(
+        select(
+            Document,
+            latest_runs.c.chunks_completed,
+            latest_runs.c.chunks_total,
+        )
+        .outerjoin(
+            latest_runs,
+            and_(
+                latest_runs.c.document_id == Document.id,
+                latest_runs.c.run_number == 1,
+            ),
+        )
         .where(Document.user_id == user_id)
         .order_by(Document.upload_timestamp.desc())
     )
-    return list(documents)
+
+    documents: list[DocumentResponse] = []
+    for document, chunks_completed, chunks_total in rows:
+        has_active_chunk_progress = (
+            document.status == "processing"
+            and chunks_total is not None
+            and chunks_total > 1
+        )
+        documents.append(
+            DocumentResponse.model_validate(document).model_copy(
+                update={
+                    "chunks_completed": (
+                        chunks_completed if has_active_chunk_progress else None
+                    ),
+                    "chunks_total": chunks_total if has_active_chunk_progress else None,
+                }
+            )
+        )
+    return documents
 
 
 async def queue_pending_documents(

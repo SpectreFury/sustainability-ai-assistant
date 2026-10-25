@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import re
+from collections.abc import Awaitable, Callable
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from time import perf_counter
@@ -51,12 +52,14 @@ _TOD_ROW_PATTERN = re.compile(
     re.IGNORECASE,
 )
 logger = logging.getLogger(__name__)
+ChunkProgressCallback = Callable[[int, int], Awaitable[None]]
 
 
 async def extract_document_facts(
     filename: str,
     content: bytes,
     trace_context: dict[str, str] | None = None,
+    on_chunk_progress: ChunkProgressCallback | None = None,
 ) -> Extraction:
     pipeline = get_pipeline(os.getenv("EXTRACTION_PIPELINE"))
     parsed = parse_document(
@@ -64,7 +67,9 @@ async def extract_document_facts(
         filename,
         all_page_images=pipeline.page_images,
     )
-    output = await _invoke_model(content, parsed, pipeline, trace_context)
+    output = await _invoke_model(
+        content, parsed, pipeline, trace_context, on_chunk_progress
+    )
     issues = [sanitize_text(issue) or "" for issue in output.issues]
     facts: list[Fact] = []
 
@@ -1050,6 +1055,7 @@ async def _invoke_model(
     parsed: ParsedDocument,
     pipeline: Pipeline,
     trace_context: dict[str, str] | None,
+    on_chunk_progress: ChunkProgressCallback | None = None,
 ) -> ExtractionOut:
     if parsed.kind != "xlsx":
         return await _invoke_model_once(content, parsed, pipeline, trace_context)
@@ -1064,6 +1070,9 @@ async def _invoke_model(
         len(chunks),
         _MAX_SPREADSHEET_CELLS_PER_CHUNK,
     )
+    if on_chunk_progress is not None:
+        await on_chunk_progress(0, len(chunks))
+
     outputs: list[ExtractionOut] = []
     for chunk_number, (segment, repeated_context_rows) in enumerate(chunks, start=1):
         chunk_context = {
@@ -1118,6 +1127,8 @@ async def _invoke_model(
             len(output.facts),
         )
         outputs.append(output)
+        if on_chunk_progress is not None:
+            await on_chunk_progress(chunk_number, len(chunks))
 
     return _merge_spreadsheet_outputs(outputs)
 

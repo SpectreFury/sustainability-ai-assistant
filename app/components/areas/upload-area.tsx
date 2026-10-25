@@ -256,13 +256,19 @@ function SavedDocumentTile({ document }: { document: DocumentRecord }) {
             <Spinner size="xs" color="yellow.500" />
           )}
           <Text color="fg.muted" fontSize="sm">
-            {document.error_message ??
-              {
-                pending: "Pending processing",
-                processing: "Processing",
-                success: "Processed",
-                failed: "Failed",
-              }[document.status]}
+            {document.error_message ?? (
+              document.status === "processing" &&
+              document.chunks_total !== null &&
+              document.chunks_total !== undefined &&
+              document.chunks_total > 1
+                ? `${document.chunks_completed ?? 0} of ${document.chunks_total} chunks`
+                : {
+                    pending: "Pending processing",
+                    processing: "Processing",
+                    success: "Processed",
+                    failed: "Failed",
+                  }[document.status]
+            )}
           </Text>
         </HStack>
         {document.status === "success" && (

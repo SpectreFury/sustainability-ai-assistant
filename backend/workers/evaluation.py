@@ -456,6 +456,17 @@ async def _prepare_source_documents(
                     len(content),
                 )
                 try:
+                    async def report_chunk_progress(
+                        chunks_completed: int,
+                        chunks_total: int,
+                    ) -> None:
+                        if not await _set_stage(
+                            run_id,
+                            lease_token,
+                            f"Extracting {chunks_completed} of {chunks_total} chunks",
+                        ):
+                            raise _EvaluationLeaseLost
+
                     extracted = await extract_document(
                         filename,
                         content,
@@ -464,6 +475,7 @@ async def _prepare_source_documents(
                             "evaluation_run_id": str(run_id),
                             "source": "source-backed-evaluation",
                         },
+                        on_chunk_progress=report_chunk_progress,
                     )
                 except Exception as error:
                     logger.error(

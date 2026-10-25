@@ -79,6 +79,8 @@ class DocumentResponse(BaseModel):
     status: str
     error_message: str | None
     upload_timestamp: datetime
+    chunks_completed: int | None = None
+    chunks_total: int | None = None
 
     @field_validator("error_message", mode="before")
     @classmethod

@@ -5,7 +5,7 @@ from pathlib import PurePath
 import httpx
 
 from schemas.extraction import Extraction
-from services.fact_extraction import extract_document_facts
+from services.fact_extraction import ChunkProgressCallback, extract_document_facts
 from services.errors import TemporaryExtractionError
 from utils.cloudinary import create_signed_raw_download_url
 
@@ -82,9 +82,11 @@ async def extract_document(
     filename: str,
     content: bytes,
     trace_context: dict[str, str] | None = None,
+    on_chunk_progress: ChunkProgressCallback | None = None,
 ) -> Extraction:
     return await extract_document_facts(
         filename,
         content,
         trace_context=trace_context,
+        on_chunk_progress=on_chunk_progress,
     )
