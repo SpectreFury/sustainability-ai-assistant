@@ -12,7 +12,7 @@
 
 ## Coding tools used
 
-- Harness - Opencode
+- Harness - Opencode (Go plan bought specifically for this task)
 - Models: GPT 6 Luna, Big Pickles, Deepseek V4.1 flash
 
 ## Run locally
