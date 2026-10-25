@@ -19,8 +19,10 @@
 
 ### Windows
 
-Install Docker Desktop with Compose v2, Node.js 20.9 or later (which includes
-`npm`), and `uv`. Open PowerShell in the repository folder and run:
+Install Node.js 20.9 or later (which includes `npm`) and `uv`. Set the hosted
+Postgres and Redis connection URLs, along with the other required credentials,
+in the repository root `.env` file. Open PowerShell in the repository folder
+and run:
 
 ```powershell
 .\dev.ps1
@@ -35,11 +37,13 @@ powershell -ExecutionPolicy Bypass -File .\dev.ps1
 
 ### Mac/Linux
 
-Install Docker with Compose v2, Node.js 20.9 or later (which includes `npm`),
-`uv`, and GNU Make. From the repository folder, run:
+Install Node.js 20.9 or later (which includes `npm`), `uv`, and GNU Make. Set
+the hosted Postgres and Redis connection URLs, along with the other required
+credentials, in the repository root `.env` file. From the repository folder,
+run:
 
 ```sh
-sudo make dev
+make dev
 ```
 
 ## Architecture

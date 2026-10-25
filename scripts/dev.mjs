@@ -11,7 +11,6 @@ const app = join(root, "app")
 const envFile = join(root, ".env")
 const isWindows = process.platform === "win32"
 const children = new Map()
-let infrastructureStarted = false
 let stopping = false
 let resolveFinished
 const finished = new Promise((resolvePromise) => {
@@ -166,7 +165,7 @@ function terminate(child) {
 async function shutdown(exitCode = 0) {
   if (stopping) return
   stopping = true
-  console.log("\nStopping API, worker, frontend, Postgres, and Redis...")
+  console.log("\nStopping API, worker, and frontend...")
 
   const activeChildren = [...children.values()]
   activeChildren.forEach(terminate)
@@ -193,18 +192,6 @@ async function shutdown(exitCode = 0) {
     }
   }
 
-  if (infrastructureStarted) {
-    try {
-      runSetup(
-        "Stopping local Postgres and Redis (their data volumes are kept)",
-        "docker",
-        ["compose", "--env-file", ".env", "-f", "backend/docker-compose.yml", "down"],
-      )
-    } catch (error) {
-      console.error(`Could not stop local infrastructure cleanly: ${error.message}`)
-      exitCode ||= 1
-    }
-  }
   process.exitCode = exitCode
   resolveFinished()
 }
@@ -213,22 +200,15 @@ async function main() {
   loadRootEnv()
   requireCommand("uv", ["--version"], "uv")
   requireCommand("npm", ["--version"], "Node.js and npm")
-  requireCommand("docker", ["compose", "version"], "Docker Compose v2")
 
   runSetup("Syncing backend dependencies", "uv", ["sync", "--locked"], backend)
   ensureFrontendDependencies()
-  runSetup(
-    "Starting local Postgres and Redis",
-    "docker",
-    ["compose", "--env-file", ".env", "-f", "backend/docker-compose.yml", "up", "-d", "--wait", "postgres", "redis"],
-  )
-  infrastructureStarted = true
   runSetup("Applying database migrations", "uv", ["run", "alembic", "upgrade", "head"], backend)
 
   console.log("\nKuKi is starting:")
   console.log("  Frontend: http://localhost:3000")
   console.log("  API:      http://localhost:8000")
-  console.log("  Stop all services with Ctrl+C. Database volumes are preserved.\n")
+  console.log("  Stop all services with Ctrl+C.\n")
 
   startService(
     "api",
@@ -265,6 +245,6 @@ async function main() {
 
 main().catch((error) => {
   console.error(`\nLocal startup failed: ${error.message}`)
-  if (children.size > 0 || infrastructureStarted) void shutdown(1)
+  if (children.size > 0) void shutdown(1)
   else process.exitCode = 1
 })
