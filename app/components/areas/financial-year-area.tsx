@@ -1,5 +1,6 @@
 "use client"
 
+import { Skeleton } from "@chakra-ui/react"
 import {
   getFinancialYearSummary,
   type FinancialYearMetric,
@@ -15,7 +16,6 @@ import {
   LuChevronDown,
   LuDownload,
   LuInfo,
-  LuLoaderCircle,
   LuTriangleAlert,
 } from "react-icons/lu"
 
@@ -343,6 +343,133 @@ function SourcesTable({ sources }: { sources: FinancialYearSource[] }) {
   )
 }
 
+function FinancialYearLoadingSkeleton() {
+  const months = Array.from({ length: 12 }, (_, index) => index)
+  const barHeights = [26, 42, 34, 59, 46, 72, 53, 38, 64, 45, 78, 56]
+
+  return (
+    <main className="fy-page" aria-busy="true">
+      <header className="fy-topbar">
+        <div className="fy-breadcrumb">
+          <Link href="/workspace">Workspace</Link>
+          <span aria-hidden="true">/</span>
+          <strong>Financial-Year Summary</strong>
+        </div>
+        <div className="fy-topbar-meta">
+          <span className="fy-data-badge"><LuCalendarDays aria-hidden="true" /> Source-backed view</span>
+          <span>Indian financial year</span>
+        </div>
+      </header>
+      <div className="fy-content">
+        <span className="sr-only" role="status">Loading financial-year summary…</span>
+        <div className="fy-title-row">
+          <div>
+            <h1>A financial year, with the gaps visible.</h1>
+            <p>Indian financial year · 1 April – 31 March</p>
+          </div>
+          <Skeleton height="40px" width="142px" borderRadius="7px" />
+        </div>
+        <div className="fy-filter-row" aria-hidden="true">
+          <Skeleton height="40px" width="150px" borderRadius="7px" />
+          <Skeleton height="40px" width="216px" borderRadius="7px" />
+          <Skeleton height="40px" width="180px" borderRadius="7px" />
+          <Skeleton height="12px" width="170px" />
+          <Skeleton height="27px" width="118px" borderRadius="5px" ml="auto" />
+        </div>
+        <section className="fy-kpi-grid" aria-hidden="true">
+          {Array.from({ length: 3 }, (_, index) => (
+            <article className="fy-kpi-card" key={index}>
+              <Skeleton height="11px" width={index === 1 ? "142px" : "118px"} mb="14px" />
+              <Skeleton height="32px" width="174px" />
+              <Skeleton height="11px" width={index === 2 ? "68%" : "86%"} mt="14px" />
+            </article>
+          ))}
+        </section>
+        <section className="fy-panel fy-coverage-panel" aria-hidden="true">
+          <div className="fy-panel-heading">
+            <div>
+              <Skeleton height="15px" width="210px" mb="8px" />
+              <Skeleton height="11px" width="min(460px, 75vw)" />
+            </div>
+            <Skeleton height="12px" width="110px" />
+          </div>
+          <div className="fy-coverage-legend">
+            <Skeleton height="22px" width="68px" borderRadius="5px" />
+            <Skeleton height="22px" width="82px" borderRadius="5px" />
+            <Skeleton height="10px" width="220px" />
+          </div>
+          <div className="fy-month-grid">
+            <div className="fy-month-header" role="row">
+              <span aria-hidden="true" />
+              <div className="fy-month-cells">
+                {months.map((month) => <Skeleton height="10px" width="26px" key={month} />)}
+              </div>
+            </div>
+            {[0, 1, 2].map((row) => (
+              <div className="fy-month-row" role="row" key={row}>
+                <div className="fy-resource-label">
+                  <Skeleton height="12px" width="76px" />
+                  <Skeleton height="10px" width="58px" />
+                </div>
+                <div className="fy-month-cells">
+                  {months.map((month) => (
+                    <div className={`fy-month-cell ${row === 0 ? "is-electricity" : "is-coverage"}`} key={month}>
+                      {row === 0 ? (
+                        <>
+                          <Skeleton height="12px" width="26px" mb="6px" />
+                          <div className="fy-month-bar-track">
+                            <Skeleton height={`${barHeights[month]}px`} width="100%" borderRadius="5px" />
+                          </div>
+                        </>
+                      ) : <Skeleton height="10px" width="26px" />}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <Skeleton height="10px" width="270px" mt="13px" />
+        </section>
+        <section className="fy-panel fy-source-panel" aria-hidden="true">
+          <div className="fy-panel-heading">
+            <div>
+              <Skeleton height="15px" width="235px" mb="8px" />
+              <Skeleton height="11px" width="min(520px, 75vw)" />
+            </div>
+          </div>
+          <div className="fy-table-scroll">
+            <table className="fy-source-table">
+              <thead><tr><th>Resource</th><th>Primary evidence</th><th>Method and source value</th><th>Treatment</th></tr></thead>
+              <tbody>
+                {Array.from({ length: 4 }, (_, index) => (
+                  <tr key={index}>
+                    <td><Skeleton height="12px" width="70px" /><Skeleton height="10px" width="88px" mt="5px" /></td>
+                    <td><Skeleton height="12px" width="75%" /><Skeleton height="10px" width="90%" mt="5px" /></td>
+                    <td><Skeleton height="12px" width="80%" /><Skeleton height="10px" width="72%" mt="5px" /></td>
+                    <td><Skeleton height="22px" width="120px" borderRadius="5px" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <div className="fy-bottom-grid" aria-hidden="true">
+          {[0, 1].map((index) => (
+            <section className={`fy-notice ${index === 0 ? "is-warning" : "is-muted"}`} key={index}>
+              <div className="fy-notice-title">
+                <Skeleton boxSize="15px" />
+                <Skeleton height="11px" width={index === 0 ? "128px" : "145px"} />
+              </div>
+              <Skeleton height="10px" width="82%" mt="8px" ml="23px" />
+              <Skeleton height="10px" width="65%" mt="5px" ml="23px" />
+            </section>
+          ))}
+        </div>
+      </div>
+    </main>
+  )
+}
+
 export function FinancialYearArea() {
   const [financialYear, setFinancialYear] = useState("")
   const [organisation, setOrganisation] = useState("")
@@ -388,6 +515,8 @@ export function FinancialYearArea() {
   const selectedOrganisationLabel = summary
     ? summary.organisation_options.find((option) => option.value === summary.organisation)?.label ?? "All organisations"
     : "All organisations"
+
+  if (summaryQuery.isPending) return <FinancialYearLoadingSkeleton />
 
   return (
     <main className="fy-page">
@@ -487,11 +616,6 @@ export function FinancialYearArea() {
           </div>
         )}
 
-        {summaryQuery.isPending && (
-          <div className="fy-state" role="status">
-            <LuLoaderCircle className="spin" aria-hidden="true" /> Loading financial-year evidence…
-          </div>
-        )}
         {summaryQuery.isError && (
           <div className="fy-state is-error" role="alert">
             <LuTriangleAlert aria-hidden="true" /> {summaryQuery.error.message}

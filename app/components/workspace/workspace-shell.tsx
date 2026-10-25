@@ -121,7 +121,6 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           <span className="workspace-brand-mark">
             <LuSprout aria-hidden="true" />
           </span>
-          <span>KuKi</span>
         </Link>
 
         <div className="workspace-picker">
