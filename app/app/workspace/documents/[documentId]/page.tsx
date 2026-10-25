@@ -1,9 +1,35 @@
-"use client"
-
 import { DocumentReviewArea } from "@/components/areas/document-review-area"
-import { useParams } from "next/navigation"
+import { Suspense } from "react"
+import { LuLoaderCircle } from "react-icons/lu"
 
-export default function DocumentReviewPage() {
-  const params = useParams<{ documentId: string }>()
-  return <DocumentReviewArea documentId={params.documentId} />
+async function DocumentReviewContent({
+  params,
+}: {
+  params: Promise<{ documentId: string }>
+}) {
+  const { documentId } = await params
+  return <DocumentReviewArea documentId={documentId} />
+}
+
+function DocumentReviewFallback() {
+  return (
+    <main className="review-page" aria-busy="true">
+      <div className="review-state" role="status">
+        <LuLoaderCircle className="spin" />
+        Loading document review…
+      </div>
+    </main>
+  )
+}
+
+export default function DocumentReviewPage({
+  params,
+}: {
+  params: Promise<{ documentId: string }>
+}) {
+  return (
+    <Suspense fallback={<DocumentReviewFallback />}>
+      <DocumentReviewContent params={params} />
+    </Suspense>
+  )
 }

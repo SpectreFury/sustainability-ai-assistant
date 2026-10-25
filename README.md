@@ -15,14 +15,15 @@
 
 ## Run locally
 
+### Requirements
+
+- Node.js
+- Python (uv)
+- Make (mostly there in linux and mac)
+
 **PS**: I want to make your life easier so that you can run this locally and hence I am **INTENTIONALLY** committing my .env, I know this is stupid in all scenarios, I just want you to have no friction when you verify the project.
 
 ### Windows
-
-Install Node.js 20.9 or later (which includes `npm`) and `uv`. Set the hosted
-Postgres and Redis connection URLs, along with the other required credentials,
-in the repository root `.env` file. Open PowerShell in the repository folder
-and run:
 
 ```powershell
 .\dev.ps1
@@ -36,11 +37,6 @@ powershell -ExecutionPolicy Bypass -File .\dev.ps1
 ```
 
 ### Mac/Linux
-
-Install Node.js 20.9 or later (which includes `npm`), `uv`, and GNU Make. Set
-the hosted Postgres and Redis connection URLs, along with the other required
-credentials, in the repository root `.env` file. From the repository folder,
-run:
 
 ```sh
 make dev

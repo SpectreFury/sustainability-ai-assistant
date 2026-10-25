@@ -5,7 +5,7 @@ import { useMutation, useQuery } from "@tanstack/react-query"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import type { ReactNode } from "react"
-import { useState } from "react"
+import { Suspense, useState } from "react"
 import {
   LuCalendarDays,
   LuFileCheck2,
@@ -17,8 +17,80 @@ import {
   LuUpload,
 } from "react-icons/lu"
 
-export function WorkspaceShell({ children }: { children: ReactNode }) {
+type WorkspacePage =
+  | "documents"
+  | "upload"
+  | "ask"
+  | "financial-year"
+  | "evaluations"
+
+function WorkspaceNavigationLinks({
+  activePage,
+}: {
+  activePage?: WorkspacePage
+}) {
+  return (
+    <nav className="workspace-nav" aria-label="Workspace navigation">
+      <Link
+        className={`workspace-nav-item ${activePage === "documents" ? "is-active" : ""}`}
+        aria-current={activePage === "documents" ? "page" : undefined}
+        href="/workspace/documents"
+      >
+        <LuFiles aria-hidden="true" />
+        <span>Documents</span>
+      </Link>
+      <Link
+        className={`workspace-nav-item ${activePage === "upload" ? "is-active" : ""}`}
+        aria-current={activePage === "upload" ? "page" : undefined}
+        href="/workspace/upload"
+      >
+        <LuUpload aria-hidden="true" />
+        <span>Upload &amp; Processing</span>
+      </Link>
+      <Link
+        className={`workspace-nav-item ${activePage === "ask" ? "is-active" : ""}`}
+        aria-current={activePage === "ask" ? "page" : undefined}
+        href="/workspace"
+      >
+        <LuSparkles aria-hidden="true" />
+        <span>Ask AI</span>
+      </Link>
+      <Link
+        className={`workspace-nav-item ${activePage === "financial-year" ? "is-active" : ""}`}
+        aria-current={activePage === "financial-year" ? "page" : undefined}
+        href="/workspace/financial-year"
+      >
+        <LuCalendarDays aria-hidden="true" />
+        <span>Financial-Year Summary</span>
+      </Link>
+      <Link
+        className={`workspace-nav-item ${activePage === "evaluations" ? "is-active" : ""}`}
+        aria-current={activePage === "evaluations" ? "page" : undefined}
+        href="/workspace/evaluations"
+      >
+        <LuFlaskConical aria-hidden="true" />
+        <span>Evaluations</span>
+      </Link>
+    </nav>
+  )
+}
+
+function WorkspaceNavigation() {
   const pathname = usePathname()
+  const activePage: WorkspacePage = pathname.startsWith("/workspace/evaluations")
+    ? "evaluations"
+    : pathname.startsWith("/workspace/documents")
+      ? "documents"
+      : pathname.startsWith("/workspace/upload")
+        ? "upload"
+        : pathname.startsWith("/workspace/financial-year")
+          ? "financial-year"
+          : "ask"
+
+  return <WorkspaceNavigationLinks activePage={activePage} />
+}
+
+export function WorkspaceShell({ children }: { children: ReactNode }) {
   const router = useRouter()
   const [logoutError, setLogoutError] = useState("")
   const userQuery = useQuery({
@@ -38,16 +110,6 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("")
-  const activePage = pathname.startsWith("/workspace/evaluations")
-    ? "evaluations"
-    : pathname.startsWith("/workspace/documents")
-      ? "documents"
-      : pathname.startsWith("/workspace/upload")
-        ? "upload"
-        : pathname.startsWith("/workspace/financial-year")
-          ? "financial-year"
-          : "ask"
-
   return (
     <div className="workspace-app">
       <aside className="workspace-sidebar">
@@ -67,48 +129,9 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           <span className="workspace-picker-name">Your workspace</span>
         </div>
 
-        <nav className="workspace-nav" aria-label="Workspace navigation">
-          <Link
-            className={`workspace-nav-item ${activePage === "documents" ? "is-active" : ""}`}
-            aria-current={activePage === "documents" ? "page" : undefined}
-            href="/workspace/documents"
-          >
-            <LuFiles aria-hidden="true" />
-            <span>Documents</span>
-          </Link>
-          <Link
-            className={`workspace-nav-item ${activePage === "upload" ? "is-active" : ""}`}
-            aria-current={activePage === "upload" ? "page" : undefined}
-            href="/workspace/upload"
-          >
-            <LuUpload aria-hidden="true" />
-            <span>Upload &amp; Processing</span>
-          </Link>
-          <Link
-            className={`workspace-nav-item ${activePage === "ask" ? "is-active" : ""}`}
-            aria-current={activePage === "ask" ? "page" : undefined}
-            href="/workspace"
-          >
-            <LuSparkles aria-hidden="true" />
-            <span>Ask AI</span>
-          </Link>
-          <Link
-            className={`workspace-nav-item ${activePage === "financial-year" ? "is-active" : ""}`}
-            aria-current={activePage === "financial-year" ? "page" : undefined}
-            href="/workspace/financial-year"
-          >
-            <LuCalendarDays aria-hidden="true" />
-            <span>Financial-Year Summary</span>
-          </Link>
-          <Link
-            className={`workspace-nav-item ${activePage === "evaluations" ? "is-active" : ""}`}
-            aria-current={activePage === "evaluations" ? "page" : undefined}
-            href="/workspace/evaluations"
-          >
-            <LuFlaskConical aria-hidden="true" />
-            <span>Evaluations</span>
-          </Link>
-        </nav>
+        <Suspense fallback={<WorkspaceNavigationLinks />}>
+          <WorkspaceNavigation />
+        </Suspense>
 
         <div className="workspace-account">
           <span className="account-avatar" aria-hidden="true">
