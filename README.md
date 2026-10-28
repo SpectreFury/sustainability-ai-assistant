@@ -1,5 +1,6 @@
 ## Sustainability AI Assistant
 
+PLEASE SEE: Since making this project public, our .env has been rotated, I will be sending the .env in the email
 ## Tech stack
 
 - **Frontend:** Next.js, React, Chakra UI, Tailwind CSS, TanStack Query, Zod.
