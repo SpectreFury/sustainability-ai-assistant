@@ -1,6 +1,12 @@
 ## Sustainability AI Assistant
 
 PLEASE SEE: Since making this project public, our .env has been rotated, I will be sending the .env in the email
+
+[Walkthrough](https://www.loom.com/share/4a41c186ba3c46359e930b10a3f384b1)
+
+[Architecture](https://www.loom.com/share/d58f90d34f43484d9de2b0cd81b29f4c)
+
+
 ## Tech stack
 
 - **Frontend:** Next.js, React, Chakra UI, Tailwind CSS, TanStack Query, Zod.
